@@ -1,0 +1,1167 @@
+/* 123云盘移动端 SPA 逻辑
+ * 通过 NativeBridge 调用原生网络层（复刻 123pan-open API）
+ * 底部导航：文件 / 传输 / 我的
+ */
+(function () {
+  'use strict';
+
+  var bridge = window.NativeBridge;
+  var state = {
+    token: '',
+    user: '',
+    view: 'files',
+    currentDir: 0,          // 当前文件夹 parentFileId（0 = 根目录）
+    breadcrumb: [],          // [{id, name}]
+    currentItem: null,        // 操作浮层对应的文件对象
+    shareItem: null,          // 正在配置分享的文件对象
+    confirmOk: null,          // 自定义确认弹窗的确定回调
+    qrTimer: null,            // 二维码轮询定时器
+    qrUniID: '',              // 当前二维码的 uniID
+    qrTimeout: null,          // 二维码过期定时器
+    qrPaused: false,          // App 在后台时 true，暂停轮询
+    qrExpired: false,          // 二维码是否已过期
+    transfers: loadTransfers(), // 下载任务列表 [{name,size,status,time}]
+    progTimer: null          // 下载进度轮询定时器
+  };
+
+  var API = {
+    list: 'https://api.123pan.cn/b/api/file/list/new',
+    rename: 'https://api.123pan.cn/a/api/file/rename',
+    trash: 'https://api.123pan.cn/a/api/file/trash',      // 移入回收站 / 从回收站恢复
+    trashDeleteAll: 'https://api.123pan.cn/a/api/file/trash_delete_all', // 清空回收站
+    trashDelete: 'https://api.123pan.cn/a/api/file/delete', // 从回收站彻底删除单个
+    download: 'https://api.123pan.cn/a/api/file/download_info',      // 文件
+    batchDownload: 'https://api.123pan.cn/a/api/file/batch_download_info', // 文件夹
+    mkdir: 'https://api.123pan.cn/a/api/file/upload_request',        // 新建文件夹（123pan 用 upload_request 创建文件夹）
+    userInfo: 'https://api.123pan.cn/b/api/user/info',
+    shareCreate: 'https://api.123pan.cn/a/api/share/create',          // 创建分享（123pan 原生分享）
+    signIn: 'https://login.123pan.com/b/api/user/sign_in',
+    qrGenerate: 'https://login.123pan.com/api/user/qr-code/generate',
+    qrResult: 'https://login.123pan.com/api/user/qr-code/result'
+  };
+  // 回收站操作 event 值（统一走 POST /a/api/file/trash，通过 event 区分）
+  var RECYCLE_EVENT = {
+    restore: 'recycleRestore', // 从回收站恢复
+    clear: 'recycleClear',     // 清空回收站
+    deleteP: 'recycleDelete'   // 从回收站彻底删除
+  };
+
+  // ---------- 工具 ----------
+  function $(id) { return document.getElementById(id); }
+  function show(el) { if (el) el.classList.remove('hidden'); }
+  function hide(el) { if (el) el.classList.add('hidden'); }
+  function esc(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;').replace(/"/g, '"');
+  }
+  function fmtSize(b) {
+    if (b == null) return '';
+    b = Number(b);
+    if (b < 1024) return b + ' B';
+    if (b < 1048576) return (b / 1024).toFixed(1) + ' KB';
+    if (b < 1073741824) return (b / 1048576).toFixed(1) + ' MB';
+    return (b / 1073741824).toFixed(2) + ' GB';
+  }
+  function iconFor(item) {
+    if (item && (item.Type === 1 || item.Type === '1')) return 'folder';
+    return iconForName(item && (item.FileName || item.fileName));
+  }
+  // 根据文件名扩展名判断文件类型图标（传输列表也复用此逻辑）
+  function iconForName(fname) {
+    var ext = (fname || '').split('.').pop().toLowerCase();
+    var img = { jpg:1, jpeg:1, png:1, gif:1, webp:1, bmp:1, heic:1 };
+    var vid = { mp4:1, mkv:1, avi:1, mov:1, rmvb:1, flv:1, wmv:1, webm:1, ts:1 };
+    var aud = { mp3:1, wav:1, flac:1, aac:1, ogg:1, m4a:1, ape:1 };
+    var arc = { zip:1, rar:1, '7z':1, tar:1, gz:1, bz2:1, xz:1, iso:1, apk:0 };
+    var tab = { xls:1, xlsx:1, ppt:1, pptx:1, doc:1, docx:1, pdf:1 };
+    if (img[ext]) return 'image';
+    if (vid[ext]) return 'video';
+    if (aud[ext]) return 'audio';
+    if (ext === 'apk') return 'apk';
+    if (arc[ext]) return 'archive';
+    if (tab[ext]) return 'table';
+    if (ext === 'txt') return 'text';
+    if (ext === 'js' || ext === 'json' || ext === 'html' || ext === 'css' || ext === 'java' || ext === 'py' || ext === 'xml' || ext === 'sh') return 'code';
+    return 'doc';
+  }
+
+  // 图标内联 SVG 内容映射（不依赖 <use> 引用外部 symbol，规避部分 WebView 无法渲染 use 图标的问题）
+  var ICON_SVG = {
+    upload: '<path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2M12 3v12M7 8l5-5 5 5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
+    'folder-plus': '<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2zM12 11v6M9 14h6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
+    folder: '<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>',
+    'arrow-down': '<path d="M12 3v12M6 9l6 6 6-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
+    user: '<path d="M20 21a8 8 0 0 0-16 0M12 13a5 5 0 1 0 0-10 5 5 0 0 0 0 10z" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
+    download: '<path d="M12 3v12M6 11l6 6 6-6M4 21h16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
+    rename: '<path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7M18.5 2.5a2.1 2.1 0 0 1 3 3L12 15l-4 1 1-4z" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
+    trash: '<path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6zM10 11v6M14 11v6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
+    share: '<path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8M16 6l-4-4-4 4M12 2v13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
+    copy: '<rect x="9" y="9" width="13" height="13" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>',
+    hdd: '<path d="M3 13v3a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-3M3 13l2.5-7A2 2 0 0 1 7.4 5h9.2a2 2 0 0 1 1.9 1.4L21 13M3 13h18" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M8 17h8" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/>',
+    info: '<circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 16v-4M12 8h.01" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>',
+    doc: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M14 2v6h6M8 13h8M8 17h8" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/>',
+    image: '<rect x="3" y="3" width="18" height="18" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="8.5" cy="8.5" r="1.5" fill="currentColor"/><path d="M21 15l-5-5L5 21" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
+    video: '<rect x="2" y="6" width="14" height="12" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M16 10l6-4v12l-6-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>',
+    audio: '<path d="M9 18V5l12-2v13" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><circle cx="6" cy="18" r="3" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="18" cy="16" r="3" fill="none" stroke="currentColor" stroke-width="2"/>',
+    archive: '<path d="M21 8l-9-5-9 5 9 5 9-5z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M3 8v8l9 5 9-5V8M12 13v8" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>',
+    table: '<rect x="3" y="3" width="18" height="18" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M3 9h18M3 15h18M9 3v18" fill="none" stroke="currentColor" stroke-width="2"/>',
+    text: '<path d="M4 6V4h16v2M12 4v16M9 20h6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
+    code: '<path d="M8 6l-6 6 6 6M16 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
+    apk: '<circle cx="5.5" cy="10.5" r="1.5" fill="currentColor" stroke="none"/><circle cx="18.5" cy="10.5" r="1.5" fill="currentColor" stroke="none"/><path d="M6.5 7h11a4 4 0 0 1 4 4v4.5a3 3 0 0 1-3 3H5.5a3 3 0 0 1-3-3V11a4 4 0 0 1 4-4z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M7.7 6V3.8M16.3 6V3.8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>'
+  };
+  function applySvg(el, name) {
+    var inner = ICON_SVG[name];
+    if (!inner) { el.innerHTML = ''; return; }
+    el.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true">' + inner + '</svg>';
+  }
+  // 图标注入：直接写入内联 SVG（不依赖外部 symbol 引用），确保各类 WebView 都能渲染
+  function injectIcons(root) {
+    var scope = root || document;
+    scope.querySelectorAll('[data-icon]').forEach(function (el) {
+      var name = el.getAttribute('data-icon');
+      applySvg(el, name);
+    });
+  }
+  // 生成一个 icon 元素（用于动态创建的 DOM）
+  function makeIcon(name, cls) {
+    var s = document.createElement('span');
+    if (cls) s.className = cls;
+    s.setAttribute('data-icon', name);
+    applySvg(s, name);
+    return s;
+  }
+
+  // ---------- 原生桥调用 ----------
+  function toast(msg) {
+    if (bridge && bridge.toast) bridge.toast(String(msg));
+  }
+  function api(method, url, body, withAuth, cb) {
+    var cbName = '_cb' + Date.now() + '_' + Math.floor(Math.random() * 1e6);
+    window[cbName] = function (json) {
+      var data;
+      try { data = (typeof json === 'string') ? JSON.parse(json) : json; } catch (e) { data = { ok: false, error: '解析失败: ' + (e && e.message ? e.message : '') }; }
+      delete window[cbName];
+      cb(data);
+    };
+    bridge.apiRequest(cbName, method, url, body || '', !!withAuth);
+  }
+  function loadToken() { return bridge && bridge.loadToken ? bridge.loadToken() : ''; }
+
+  // ---------- 页面切换 ----------
+  function switchView(v) {
+    state.view = v;
+    ['files', 'transfers', 'recycle', 'mine'].forEach(function (k) {
+      var sec = $('view-' + k);
+      var tab = null;
+      document.querySelectorAll('#tabbar .tab').forEach(function (t) {
+        if (t.getAttribute('data-view') === k) tab = t;
+      });
+      if (sec) sec.classList.toggle('hidden', k !== v);
+      if (tab) tab.classList.toggle('active', k === v);
+    });
+    if (v === 'mine') loadMine();
+    if (v === 'recycle') loadRecycle();
+    if (v === 'transfers') { renderTransfers(); startProgressPolling(); }
+    else { stopProgressPolling(); }
+    if (v === 'files' && !$('file-list').dataset.loaded) loadList();
+  }
+
+  // ---------- 下载任务（传输列表） ----------
+  function loadTransfers() {
+    try {
+      var raw = localStorage.getItem('pan_transfers');
+      var arr = raw ? JSON.parse(raw) : [];
+      return Array.isArray(arr) ? arr : [];
+    } catch (e) { return []; }
+  }
+  function saveTransfers() {
+    try { localStorage.setItem('pan_transfers', JSON.stringify(state.transfers)); } catch (e) {}
+  }
+  function addTransfer(t) {
+    if (!state.transfers) state.transfers = [];
+    state.transfers.unshift({ id: t.id || -1, name: t.name || '', size: t.size, status: t.status || 'downloading', done: 0, total: 0, time: Date.now() });
+    saveTransfers();
+  }
+  function statusLabel(st, done, total) {
+    st = Number(st);
+    if (st === 8) return '已完成';
+    if (st === 16) return '失败';
+    // 下载中（1）/ 其他挂起态：显示进度百分比
+    var tot = Number(total);
+    if (tot > 0) {
+      var p = Math.floor((Number(done) || 0) / tot * 100);
+      if (p > 100) p = 100;
+      return '下载中 ' + p + '%';
+    }
+    return '下载中';
+  }
+  function startProgressPolling() {
+    if (state.progTimer) return;
+    pollDownloadProgress();
+    state.progTimer = setInterval(pollDownloadProgress, 2000);
+  }
+  function stopProgressPolling() {
+    if (state.progTimer) { clearInterval(state.progTimer); state.progTimer = null; }
+  }
+  // 轮询 DownloadManager，按 id/name 匹配更新传输任务进度与状态；完成态保留"已完成"
+  function pollDownloadProgress() {
+    if (!(bridge && bridge.queryDownloads)) return;
+    try {
+      var list = JSON.parse(bridge.queryDownloads() || '[]');
+      if (!Array.isArray(list) || !list.length || !state.transfers) return;
+      var nameToStatus = {};
+      list.forEach(function (dl) { nameToStatus[dl.name] = dl; });
+      var changed = false;
+      state.transfers.forEach(function (t) {
+        var hit = null;
+        if (t.id >= 0) { list.forEach(function (x) { if (Number(x.id) === Number(t.id)) hit = x; }); }
+        if (!hit && t.name) hit = nameToStatus[t.name] || null;
+        if (hit) {
+          // 已完成后不再覆盖回"下载中"
+          if (t.status === 'completed') return;
+          var st = Number(hit.status);
+          t.done = Number(hit.done) || 0;
+          t.total = Number(hit.total) || 0;
+          if (st === 8) { t.status = 'completed'; }
+          else if (st === 16) { t.status = 'failed'; }
+          else { t.status = 'downloading'; }
+          changed = true;
+        }
+      });
+      if (changed) {
+        saveTransfers();
+        if (state.view === 'transfers') renderTransfers();
+      }
+    } catch (e) { /* 忽略轮询解析错误 */ }
+  }
+  function renderTransfers() {
+    var box = $('transfer-list');
+    var empty = $('transfer-empty');
+    var arr = state.transfers || loadTransfers();
+    state.transfers = arr;
+    if (!box) return;
+    if (!arr.length) {
+      if (empty) show(empty);
+      box.innerHTML = '';
+      return;
+    }
+    if (empty) hide(empty);
+    var html = '';
+    for (var i = 0; i < arr.length; i++) {
+      var t = arr[i];
+      var nm = t.name || '';
+      var sz = fmtSize(t.size);
+      var label = t.status === 'downloading'
+        ? statusLabel(1, t.done, t.total)
+        : (t.status === 'completed' ? '已完成' : (t.status === 'failed' ? '失败' : mapStatusText(t.status)));
+      var doneOk = (t.status === 'completed');
+      // 已完成任务显示真实文件类型图标，未完成任务显示下载图标
+      var icName = doneOk ? iconForName(nm) : 'download';
+      html += '<div class="transfer-item">'
+        + '<div class="transfer-ic ic-' + icName + '" data-icon="' + icName + '"></div>'
+        + '<div class="transfer-info"><div class="transfer-name">' + esc(nm) + '</div>'
+        + '<div class="transfer-sub">' + esc(sz) + ' · ' + esc(label) + '</div></div>'
+        + '<button class="transfer-open' + (doneOk ? '' : ' disabled') + '" data-i="' + i + '">打开</button>'
+        + '<button class="transfer-del" data-i="' + i + '" title="删除记录">×</button>'
+        + '</div>';
+    }
+    box.innerHTML = html;
+    // 打开按钮：apk 走安装程序，其他走系统推荐打开方式
+    box.querySelectorAll('.transfer-open').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var idx = Number(btn.getAttribute('data-i'));
+        var t = state.transfers[idx];
+        if (!t) return;
+        if (t.status !== 'completed') { toast('文件未下载完成，暂不能打开'); return; }
+        if (bridge && bridge.openFile) { bridge.openFile(t.name); }
+        else {
+          var p = '/sdcard/Download/' + t.name;
+          if (/\.apk$/i.test(t.name)) { bridge.openApk && bridge.openApk(p); }
+        }
+      });
+    });
+    // 删除按钮：确认后从传输列表移除该条记录
+    box.querySelectorAll('.transfer-del').forEach(function (btn) {
+      btn.addEventListener('click', function (e) {
+        e.stopPropagation();
+        var idx = Number(btn.getAttribute('data-i'));
+        var t = state.transfers && state.transfers[idx];
+        if (!t) return;
+        state.transfers.splice(idx, 1);
+        saveTransfers();
+        renderTransfers();
+        toast('已删除传输记录「' + (t.name || '') + '」');
+      });
+    });
+  }
+  function mapStatusText(s) {
+    return (s === 'completed') ? '已完成' : (s === 'failed' ? '失败' : String(s || '下载中'));
+  }
+
+  // ---------- 登录 ----------
+  function doLogin() {
+    var u = $('login-user').value.trim();
+    var p = $('login-pass').value;
+    if (!u || !p) { $('login-msg').textContent = '请输入账号和密码'; return; }
+    var btn = $('login-btn');
+    btn.disabled = true;
+    $('login-msg').textContent = '登录中...';
+    api('POST', API.signIn,
+      JSON.stringify({ type: 1, passport: u, password: p }),
+      false,
+      function (d) {
+        btn.disabled = false;
+        var tok = d && d.data ? (d.data.token || d.data.authorization || '') : '';
+        if (tok) {
+          if (tok.indexOf('Bearer ') === 0) tok = tok.slice(7);
+          state.token = tok;
+          state.user = u;
+          bridge.saveSession(tok, u, p);
+          toast('登录成功');
+          enterMain();
+        } else {
+          $('login-msg').textContent = (d && d.message) ? d.message
+            : ('登录失败[' + (d && d.code != null ? d.code : '') + ']，请检查账号密码');
+        }
+      });
+  }
+  function enterMain() {
+    stopQrPolling();
+    hide($('page-login'));
+    show($('page-main'));
+    switchView('files');
+  }
+
+  // ---------- 扫码登录 ----------
+  function qrUrlEncode(s) {
+    return encodeURIComponent(s);
+  }
+  function stopQrPolling() {
+    if (state.qrTimer) { clearInterval(state.qrTimer); state.qrTimer = null; }
+  }
+  function startQrLogin() {
+    var img = $('qr-img');
+    var status = $('qr-status');
+    // 重置暂停/过期状态，确保新二维码轮询能正常开始
+    state.qrPaused = false;
+    state.qrExpired = false;
+    if (state.qrTimeout) { clearTimeout(state.qrTimeout); state.qrTimeout = null; }
+    img.src = '';
+    img.style.display = 'none';
+    status.textContent = '正在获取二维码...';
+    // 调用 generate 生成 uniID + url（无 Token 的公开接口）
+    api('GET', API.qrGenerate, '', false, function (d) {
+      if (d && d.code === 0 && d.data && d.data.uniID && d.data.url) {
+        state.qrUniID = d.data.uniID;
+        var content = d.data.url + '?env=production&uniID=' + d.data.uniID
+          + '&source=123pan&type=login';
+        // 用在线二维码服务生成图片
+        img.src = 'http://api.qrserver.com/v1/create-qr-code/?size=230x230&data='
+          + qrUrlEncode(content);
+        img.style.display = 'block';
+        status.textContent = '请使用微信或 123 云盘 App 扫码';
+        stopQrPolling();
+        pollQrStatus();
+      } else {
+        status.textContent = '获取二维码失败：' + (d && (d.error || d.message) ? (d.error || d.message) : '网络异常');
+      }
+    });
+  }
+  function pollQrStatus() {
+    stopQrPolling();
+    state.qrExpired = false;
+    state.qrTimer = setInterval(function () {
+      if (!state.qrUniID) return;
+      if (state.qrPaused) return;   // App 在后台：暂停轮询，避免过量 binder 流量
+      var url = API.qrResult + '?uniID=' + state.qrUniID;
+      api('GET', url, '', false, function (d) {
+        if (state.qrPaused) return; // 请求期间被暂停则丢弃结果
+        // code 0 表示接口正常
+        if (d && d.code === 0 && d.data) {
+          var token = d.data.token || d.data.authorization || '';
+          // 已确认登录则拿到 token
+          if (token) {
+            if (token.indexOf('Bearer ') === 0) token = token.slice(7);
+            state.token = token;
+            state.user = '';
+            bridge.saveSession(token, '', '');
+            stopQrPolling();
+            state.qrExpired = false;
+            state.qrPaused = false;
+            toast('扫码登录成功');
+            enterMain();
+            return;
+          }
+          // 0=等待扫码, 1=已扫码待确认, 其它状态提示
+          var st = d.data.loginStatus;
+          var msg = $('qr-status');
+          if (st === 0) {
+            msg.textContent = '等待扫码...';
+            state.qrExpired = false;
+          } else if (st === 1) {
+            msg.textContent = '已扫码，请在手机上确认';
+          } else {
+            msg.textContent = '状态码 ' + st + '，如需重试请刷新';
+          }
+        } else {
+          // 接口异常：停止，避免频繁请求
+          stopQrPolling();
+          $('qr-status').textContent = '轮询异常：' + (d && d.message ? d.message : '网络错误');
+        }
+      });
+    }, 3000);
+    // 90 秒超时：仅提示二维码过期并停止轮询，不再自动递归刷新。
+    // 此前此处 setTimeout 递归 startQrLogin()，会形成 "60s 未登录→刷新二维码→
+    // 又 60s→再刷新" 的无限循环，后台持续请求导致 CPU/RSS 过高被系统杀死。
+    if (state.qrTimeout) { clearTimeout(state.qrTimeout); state.qrTimeout = null; }
+    state.qrExpired = false;
+    state.qrTimeout = setTimeout(function () {
+      if (state.qrTimer && !state.token) {
+        stopQrPolling();
+        state.qrExpired = true;
+        var msg = $('qr-status');
+        if (msg) msg.textContent = '二维码已过期，请点击刷新';
+      }
+    }, 90000);
+  }
+
+  // App 切后台：暂停扫码轮询（由原生 onPause 调用）
+  window.__onAppPause = function () {
+    state.qrPaused = true;
+    stopQrPolling();
+  };
+  // App 回前台：若仍在扫码登录页且无 token，恢复轮询（由原生 onResume 调用）
+  window.__onAppResume = function () {
+    state.qrPaused = false;
+    if (!state.token && state.qrUniID && $('page-login') && !$('page-login').classList.contains('hidden')) {
+      if (!state.qrTimer && !state.qrExpired) pollQrStatus();
+      else if (state.qrExpired) {
+        var msg = $('qr-status');
+        if (msg) msg.textContent = '二维码已过期，请点击刷新';
+      }
+    }
+  };
+  function switchLoginTab(tab) {
+    var isQr = (tab === 'qr');
+    document.querySelectorAll('.login-tab').forEach(function (t) {
+      t.classList.toggle('active', t.getAttribute('data-logintab') === tab);
+    });
+    $('login-qr-panel').classList.toggle('hidden', !isQr);
+    $('login-pwd-panel').classList.toggle('hidden', isQr);
+    if (isQr) {
+      stopQrPolling();
+      startQrLogin();
+    }
+  }
+
+
+  // ---------- 会话恢复 ----------
+  window.__restoreSession = function (token, user) {
+    if (token) {
+      state.token = token;
+      state.user = user || '';
+      enterMain();
+    }
+  };
+
+  // ---------- 文件列表 ----------
+  function renderBreadcrumb() {
+    var box = $('breadcrumb');
+    box.innerHTML = '';
+    var root = document.createElement('span');
+    root.className = 'crumb' + (state.currentDir === 0 ? ' active' : '');
+    root.textContent = '全部文件';
+    root.addEventListener('click', function () {
+      if (state.currentDir !== 0) { state.currentDir = 0; state.breadcrumb = []; loadList(); }
+    });
+    box.appendChild(root);
+    state.breadcrumb.forEach(function (c, i) {
+      var sep = document.createElement('span'); sep.className = 'sep'; sep.textContent = '›';
+      var crumb = document.createElement('span');
+      crumb.className = 'crumb' + (i === state.breadcrumb.length - 1 ? ' active' : '');
+      crumb.textContent = c.name;
+      crumb.addEventListener('click', function () {
+        if (i < state.breadcrumb.length - 1) {
+          state.breadcrumb = state.breadcrumb.slice(0, i + 1);
+          state.currentDir = c.id;
+          loadList();
+        }
+      });
+      box.appendChild(sep);
+      box.appendChild(crumb);
+    });
+  }
+
+  function loadList() {
+    renderBreadcrumb();
+    var box = $('file-list');
+    box.dataset.loaded = '1';
+    box.innerHTML = '<div class="loading-dot">加载中...</div>';
+    var params = 'driveId=0&limit=200&next=0&orderBy=file_id&orderDirection=desc'
+      + '&parentFileId=' + state.currentDir + '&trashed=false&Page=1&OnlyLookAbnormalFile=0';
+    api('GET', API.list + '?' + params, '', true, function (d) {
+      if (d && d.data && d.data.InfoList) {
+        renderList(d.data.InfoList, d.data.Total);
+      } else {
+        box.innerHTML = '<div class="panel-empty"><div class="panel-icon" data-icon="folder"></div><p>加载失败或需重新登录</p></div>';
+        injectIcons(box);
+      }
+    });
+  }
+
+  function renderList(list, total) {
+    var box = $('file-list');
+    box.innerHTML = '';
+    if (!list || !list.length) {
+      box.innerHTML = '<div class="panel-empty"><div class="panel-icon" data-icon="folder"></div><p>此目录为空</p></div>';
+      injectIcons(box);
+      return;
+    }
+    list.forEach(function (item) {
+      var card = document.createElement('div');
+      card.className = 'file-card';
+      // 图标区（40px 圆角色块，按类型着色更形象）
+      var iconWrap = document.createElement('div');
+      iconWrap.className = 'file-icon-wrap fi-' + iconFor(item);
+      iconWrap.appendChild(makeIcon(iconFor(item), 'file-icon'));
+      // 正文区
+      var body = document.createElement('div'); body.className = 'file-body';
+      var name = document.createElement('div'); name.className = 'file-name'; name.textContent = item.FileName || '未命名';
+      var meta = document.createElement('div'); meta.className = 'file-meta';
+      meta.textContent = item.Type === 1 ? '文件夹' : (fmtSize(item.Size) + ' · ' + (item.ModifyTime || ''));
+      body.appendChild(name); body.appendChild(meta);
+      // 快捷方式按钮已移除：文件/文件夹的下载、删除等操作统一点击卡片后经操作浮层执行
+      card.appendChild(iconWrap); card.appendChild(body);
+      // 事件：文件/文件夹统一点击弹出操作浮层（文件夹浮层含"打开"入口）
+      card.addEventListener('click', function (e) {
+        openActionSheet(item);
+      });
+      box.appendChild(card);
+    });
+  }
+
+  // ---------- 操作浮层（九宫格） ----------
+  // 打开文件夹：进入目录
+  function openDir(item) {
+    closeSheet();
+    state.breadcrumb.push({ id: item.FileId, name: item.FileName });
+    state.currentDir = item.FileId;
+    loadList();
+  }
+  function openActionSheet(item) {
+    state.currentItem = item;
+    $('sheet-title').textContent = item.FileName || '未命名';
+    var grid = $('sheet-grid');
+    grid.innerHTML = '';
+    // 点击菜单项按类型区分：
+    //   - 文件夹 (Type===1)：打开 / 分享 / 重命名 / 删除
+    //   - 文件   (Type!==1)：下载 / 分享 / 重命名 / 删除
+    var isDir = item.Type === 1;
+    var items;
+    if (isDir) {
+      items = [
+        { icon: 'open', label: '打开', cls: 'primary', fn: function () { closeSheet(); openDir(item); } },
+        { icon: 'share', label: '分享', cls: '', fn: function () { closeSheet(); doShare(item); } },
+        { icon: 'rename', label: '重命名', cls: '', fn: function () { closeSheet(); onAction('rename', item); } },
+        { icon: 'trash', label: '删除', cls: 'warn', fn: function () { closeSheet(); onAction('delete', item); } }
+      ];
+    } else {
+      items = [
+        { icon: 'download', label: '下载', cls: 'primary', fn: function () { closeSheet(); doDownload(item); } },
+        { icon: 'share', label: '分享', cls: '', fn: function () { closeSheet(); doShare(item); } },
+        { icon: 'rename', label: '重命名', cls: '', fn: function () { closeSheet(); onAction('rename', item); } },
+        { icon: 'trash', label: '删除', cls: 'warn', fn: function () { closeSheet(); onAction('delete', item); } }
+      ];
+    }
+    items.forEach(function (it) {
+      var el = document.createElement('div');
+      el.className = 'sheet-grid-item ' + it.cls;
+      // 文字图标：功能名称直接置于方块内，不再使用 SVG 图标、不在方块下方单独显示名称
+      var ic = document.createElement('div'); ic.className = 'sgi-icon';
+      ic.textContent = it.label;
+      el.appendChild(ic);
+      el.title = it.label;
+      el.addEventListener('click', it.fn);
+      grid.appendChild(el);
+    });
+    show($('action-sheet'));
+  }
+  function closeSheet() { hide($('action-sheet')); }
+
+  // ---------- 自定义确认弹窗（替代原生 confirm） ----------
+  function showConfirm(message, onOk) {
+    $('cf-message').textContent = message || '';
+    state.confirmOk = onOk || null;
+    show($('confirm-modal'));
+  }
+  function onCfOk() {
+    hide($('confirm-modal'));
+    var cb = state.confirmOk;
+    state.confirmOk = null;
+    if (cb) cb();
+  }
+
+  // ---------- 操作处理 ----------
+  function onAction(act, item) {
+    state.currentItem = item;
+    if (act === 'rename') {
+      closeSheet();
+      $('rename-input').value = item.FileName || '';
+      show($('rename-modal'));
+    } else if (act === 'download') {
+      doDownload(item);
+    } else if (act === 'delete') {
+      closeSheet();
+      showConfirm('确认删除「' + (item.FileName || '') + '」？', function () { doDelete(item); });
+    }
+  }
+
+  function doRename() {
+    var item = state.currentItem;
+    if (!item) return;
+    var newName = $('rename-input').value.trim();
+    if (!newName) { toast('名称不能为空'); return; }
+    // 123pan 重命名：POST /a/api/file/rename，请求体 {driveId, fileId, fileName(新名), duplicate}
+    api('POST', API.rename,
+      JSON.stringify({ driveId: 0, fileId: item.FileId, fileName: newName, duplicate: 1 }),
+      true,
+      function (d) {
+        if (d && d.code === 0) { hide($('rename-modal')); toast('重命名成功'); loadList(); }
+        else toast((d && d.message) || '重命名失败');
+      });
+  }
+
+  function doDelete(item) {
+    // 123pan 删除：POST /a/api/file/trash，请求体 {RequestSource, driveId, event:"intoRecycle", fileTrashInfoList:[{FileId}], operatePlace, operation}
+    api('POST', API.trash,
+      JSON.stringify({
+        RequestSource: null,
+        driveId: 0,
+        event: 'intoRecycle',
+        fileTrashInfoList: [{ FileId: item.FileId }],
+        operatePlace: 1,
+        operation: true
+      }),
+      true,
+      function (d) {
+        if (d && d.code === 0) { toast('已移入回收站'); loadList(); }
+        else toast((d && d.message) || '删除失败');
+      });
+  }
+
+  // ---------- 回收站 ----------
+  // 回收站列表：复用文件列表接口，trashed=true 表示回收站文件（parentFileId=0 全量扁平）
+  function loadRecycle() {
+    var box = $('recycle-list');
+    var empty = $('recycle-empty');
+    if (!box) return;
+    box.dataset.loaded = '1';
+    box.innerHTML = '<div class="loading-dot">加载中...</div>';
+    var params = 'driveId=0&limit=500&next=0&orderBy=file_id&orderDirection=desc'
+      + '&parentFileId=0&trashed=true&Page=1&OnlyLookAbnormalFile=0';
+    api('GET', API.list + '?' + params, '', true, function (d) {
+      var list = d && d.data && (d.data.InfoList || d.data.Info);
+      if (list && list.length) {
+        if (empty) hide(empty);
+        renderRecycle(list);
+      } else {
+        if (empty) show(empty);
+        box.innerHTML = '';
+      }
+    });
+  }
+  function renderRecycle(list) {
+    var box = $('recycle-list');
+    box.innerHTML = '';
+    if (!list || !list.length) { box.innerHTML = '<div class="panel-empty"><div class="panel-icon" data-icon="trash"></div><p>回收站为空</p></div>'; injectIcons(box); return; }
+    list.forEach(function (item) {
+      var card = document.createElement('div');
+      card.className = 'file-card';
+      var iconWrap = document.createElement('div');
+      iconWrap.className = 'file-icon-wrap fi-' + iconFor(item);
+      iconWrap.appendChild(makeIcon(iconFor(item), 'file-icon'));
+      var body = document.createElement('div'); body.className = 'file-body';
+      var name = document.createElement('div'); name.className = 'file-name'; name.textContent = item.FileName || '未命名';
+      var meta = document.createElement('div'); meta.className = 'file-meta';
+      meta.textContent = item.Type === 1 ? '文件夹' : (fmtSize(item.Size) + ' · ' + (item.TrashTime || item.ModifyTime || ''));
+      body.appendChild(name); body.appendChild(meta);
+      card.appendChild(iconWrap); card.appendChild(body);
+      card.addEventListener('click', function () { openRecycleSheet(item); });
+      box.appendChild(card);
+    });
+  }
+  // 回收站文件操作浮层：恢复 / 彻底删除
+  function openRecycleSheet(item) {
+    state.currentItem = item;
+    $('sheet-title').textContent = (item.FileName || '未命名') + '（回收站）';
+    var grid = $('sheet-grid');
+    grid.innerHTML = '';
+    var items = [
+      { icon: 'restore', label: '恢复', cls: 'primary', fn: function () {
+          closeSheet();
+          doRecycleOp(item, RECYCLE_EVENT.restore);
+        } },
+      { icon: 'trash', label: '彻底删除', cls: 'warn', fn: function () {
+          closeSheet();
+          doRecycleOp(item, RECYCLE_EVENT.deleteP);
+        } }
+    ];
+    items.forEach(function (it) {
+      var el = document.createElement('div');
+      el.className = 'sheet-grid-item ' + it.cls;
+      var ic = document.createElement('div'); ic.className = 'sgi-icon';
+      ic.textContent = it.label;
+      el.appendChild(ic);
+      el.title = it.label;
+      el.addEventListener('click', it.fn);
+      grid.appendChild(el);
+    });
+    show($('action-sheet'));
+  }
+  // 通用回收站操作（恢复 / 彻底删除）
+  // 恢复：POST /a/api/file/trash（event=recycleRestore，operation=false）
+  // 彻底删除：POST /a/api/file/delete（event=recycleDelete，fileIdList）
+  function doRecycleOp(item, ev) {
+    var isRestore = (ev === RECYCLE_EVENT.restore);
+    var url = isRestore ? API.trash : API.trashDelete;
+    var body = isRestore
+      ? { RequestSource: null, driveId: 0, event: ev, fileTrashInfoList: [{ FileId: item.FileId }], operatePlace: 1, operation: false, safeBox: false }
+      : { RequestSource: null, event: ev, fileIdList: [item.FileId], operatePlace: 1 };
+    api('POST', url, JSON.stringify(body), true, function (d) {
+      if (d && d.code === 0) {
+        toast(isRestore ? '已恢复' : '已彻底删除');
+        loadRecycle();
+      } else toast((d && d.message) || '操作失败');
+    });
+  }
+  // 清空回收站：走专用接口 file/trash_delete_all（event=recycleClear），清空后 code 为 7301 视为成功
+  function recycleClearAll() {
+    api('POST', API.trashDeleteAll,
+      JSON.stringify({ RequestSource: null, event: RECYCLE_EVENT.clear }),
+      true,
+      function (d) {
+        // 清空接口成功返回 code=7301（"已清空，系统释放空间需要一段时间"），code=0 或 7301 均算成功
+        if (d && (d.code === 0 || d.code === 7301)) { toast('回收站已清空'); loadRecycle(); }
+        else toast((d && d.message) || '清空失败');
+      });
+  }
+
+  // 下载：文件走 download_info，文件夹走 batch_download_info
+  // 修复①：download_info 请求体必须携带真实字节数，否则接口返回"请输入size"。
+  //     列表项尺寸字段可能是 Size / FileSize / size，全面兜底，且 type 需为数字。
+  // 修复②：body 同时携带 size 与 fileSize 两个字段，兼容 123pan 接口不同字段名。
+  function buildDownloadBody(item) {
+    var sz = Number(item.Size) || Number(item.FileSize) || Number(item.size) || 0;
+    return {
+      driveId: 0,
+      etag: item.Etag || item.etag || '',
+      fileId: item.FileId || item.fileId,
+      size: sz,
+      fileSize: sz,
+      s3keyFlag: item.S3KeyFlag || item.s3keyFlag || item.s3KeyFlag || '',
+      fileName: item.FileName || item.fileName || '',
+      fileNameType: (item.Type !== undefined ? item.Type : 0),
+      type: 'download'
+    };
+  }
+  function pickDownloadUrl(d) {
+    var dl = d && d.data;
+    if (!dl) return '';
+    return (dl.DownloadUrl || dl.downloadUrl || dl.url
+      || (dl[0] && (dl[0].DownloadUrl || dl[0].url)) || '');
+  }
+  function doDownload(item) {
+    var url, body;
+    if (item.Type === 1) {
+      url = API.batchDownload;
+      body = JSON.stringify({ fileIdList: [{ fileId: item.FileId || item.fileId }] });
+    } else {
+      url = API.download;
+      body = JSON.stringify(buildDownloadBody(item));
+    }
+    toast('正在获取下载链接...');
+    api('POST', url, body, true, function (d) {
+      if (!d || !d.data) {
+        // 接口明确报缺 size 时给出可理解的提示，避免用户看到乱码般的原始错误
+        var msg = (d && (d.message || d.error)) || '获取下载链接失败';
+        if (/size/i.test(msg)) msg = '下载失败：该文件缺少大小信息，请刷新列表后重试';
+        toast(msg);
+        return;
+      }
+      var link = pickDownloadUrl(d);
+      if (link) {
+        var fname = item.FileName || item.fileName || (Date.now() + '');
+        var started = false;
+        var genId = -1;
+        // 优先走原生 DownloadManager（真正落盘到 Download 目录）
+        if (bridge && bridge.download) {
+          try {
+            genId = Number(bridge.download(link, fname));
+            started = genId >= 0;
+          } catch (e) { started = false; }
+        }
+        if (!started) {
+          // 回退：新窗口触发（原生 setDownloadListener 接管）
+          var a = document.createElement('a');
+          a.href = link; a.target = '_blank'; a.rel = 'noopener';
+          document.body.appendChild(a); a.click(); a.remove();
+        }
+        addTransfer({ id: genId, name: fname, size: item.Size || item.size, status: 'downloading' });
+        startProgressPolling();
+        toast('已加入下载任务');
+      } else {
+        toast('暂无法获取直链，请查看返回信息');
+      }
+    });
+  }
+
+  // 分享：弹出配置浮层（选有效期 + 提取码方式），确认后调用 123盘原生分享接口
+  function doShare(item) {
+    if (!item || !item.FileId) { toast('无法分享该对象'); return; }
+    state.shareItem = item;                         // 记住当前要分享的对象
+    // 每次打开配置弹窗时重置为默认（永久有效 + 随机提取码）
+    var expireRadios = document.getElementsByName('sc-expire');
+    for (var e = 0; e < expireRadios.length; e++) expireRadios[e].checked = (expireRadios[e].value === '4');
+    var pwdRadios = document.getElementsByName('sc-pwd');
+    for (var p = 0; p < pwdRadios.length; p++) pwdRadios[p].checked = (pwdRadios[p].value === '1');
+    var inp = $('sc-pwd-input'); if (inp) inp.value = '';
+    hide($('sc-custom'));
+    show($('share-config-modal'));
+  }
+  // 根据有效期选项生成到期 ISO 时间字符串（东八区）
+  function shareExpiration(expireValue) {
+    if (expireValue == null || Number(expireValue) === 4) return '2099-12-12T08:00:00+08:00'; // 永久
+    var hours = Number(expireValue) === 1 ? 24 : Number(expireValue) === 2 ? 168 : 720;   // 1天/7天/30天
+    var now = Date.now();
+    var d = new Date(now + hours * 3600 * 1000);
+    function p(n) { return (n < 10 ? '0' : '') + n; }
+    return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate())
+      + 'T' + p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds()) + '+08:00';
+  }
+  // 直连分享：不调用官方分享接口，改用 download_info 获取下载直链直接分享（旧方案）
+  // 说明：走 123pan 文件直链，无提取码、无需对方登录，链接通常有时效性；仅文件适用。
+  function doShareDirect(item) {
+    if (!item || !item.FileId) { toast('无法分享该对象'); return; }
+    if (item.Type === 1) { toast('文件夹暂不支持直连分享，请改用官方方式'); return; }
+    toast('正在获取直连链接...');
+    api('POST', API.download, JSON.stringify(buildDownloadBody(item)), true, function (d) {
+      if (!d || !d.data) {
+        var msg = (d && (d.message || d.error)) || '获取直链失败';
+        if (/size/i.test(msg)) msg = '获取直链失败：文件缺少大小信息，请刷新列表后重试';
+        toast(msg);
+        return;
+      }
+      var link = pickDownloadUrl(d);
+      if (!link) { toast('暂无法获取直链，请刷新后重试'); return; }
+      showShareModal(item.FileName || '直链', link, '');
+    });
+  }
+  // 点击"创建分享"：读取配置并调用分享创建接口
+  function doCreateShare() {
+    var item = state.shareItem;
+    if (!item) { hide($('share-config-modal')); return; }
+    // 选择的有效期
+    var expireVal = '4';
+    var expireRadios = document.getElementsByName('sc-expire');
+    for (var e = 0; e < expireRadios.length; e++) if (expireRadios[e].checked) { expireVal = expireRadios[e].value; break; }
+    // 选择的提取码方式
+    var pwdType = '1';
+    var pwdRadios = document.getElementsByName('sc-pwd');
+    for (var p = 0; p < pwdRadios.length; p++) if (pwdRadios[p].checked) { pwdType = pwdRadios[p].value; break; }
+    // 直连分享：不调用官方分享接口，而是获取下载直链直接分享（旧方案）
+    if (pwdType === '4') {
+      hide($('share-config-modal'));
+      doShareDirect(item);
+      return;
+    }
+    // sharePwd：随机(1)时留空由服务端生成；无提取码(2)时留空；自定义(3)时用用户输入
+    var sharePwd = '';
+    if (pwdType === '3') {
+      sharePwd = ($('sc-pwd-input') && $('sc-pwd-input').value || '').trim().toUpperCase();
+      if (!/^[A-Z0-9]{4}$/.test(sharePwd)) { toast('请输入4位提取码（字母/数字）'); return; }
+    }
+    hide($('share-config-modal'));
+    var shareBody = {
+      driveId: 0,
+      expiration: shareExpiration(expireVal),
+      fileIdList: String(item.FileId),          // 123pan 分享接口要求逗号拼接的 fileId 字符串
+      shareName: item.FileName || item.fileName || '分享',
+      sharePwd: sharePwd,
+      event: 'shareCreate',
+      fileNum: 1,
+      renameVisible: false,
+      shareTypeValue: Number(pwdType),           // 1=随机提取码 2=无提取码 3=自定义提取码
+      shareModality: Number(expireVal),          // 1=1天 2=7天 3=30天 4=永久
+      operatePlace: 1,
+      trafficSwitch: true
+    };
+    toast('正在创建分享...');
+    api('POST', API.shareCreate, JSON.stringify(shareBody), true, function (d) {
+      if (!d || d.code !== 0 || !d.data) {
+        toast((d && (d.message || d.error)) || '创建分享失败');
+        return;
+      }
+      var dt = d.data;
+      // ShareKey 形如 "key-pwd"（- 后为提取码，可能为空）
+      var shareKey = dt.ShareKey || '';
+      var key = shareKey, pwd = '';
+      var dash = shareKey.indexOf('-');
+      if (dash >= 0) { key = shareKey.slice(0, dash); pwd = shareKey.slice(dash + 1); }
+      // 官方标准分享访问链接，若提供了 shareLinkList（实际可用域名）则优先
+      var link = 'https://www.123pan.com/s/' + key;
+      var sl = dt.shareLinkList;
+      if (sl && sl.list && sl.list.length) { link = sl.list[0]; }
+      else if (sl && sl.standBy) { link = sl.standBy; }
+      // 无提取码(shareTypeValue=2)或接口未返回提取码后缀时，不显示提取码
+      var showPwd = !(pwdType === '2') && pwd;
+      showShareModal(item.FileName || '分享', link, showPwd ? pwd : '');
+    });
+  }
+  function showShareModal(title, link, pwd) {
+    $('share-title').textContent = '分享 · ' + title;
+    $('share-link').textContent = link;
+    $('share-link').value = link;
+    var pwdEl = $('share-pwd');
+    var row = $('share-pwd-row');
+    if (pwd) {
+      pwdEl.textContent = pwd;
+      if (row) row.style.display = '';
+    } else {
+      pwdEl.textContent = '';
+      if (row) row.style.display = 'none';
+    }
+    show($('share-modal'));
+  }
+  // 复制分享链接到剪贴板
+  function doCopyLink() {
+    var link = $('share-link') && $('share-link').value;
+    if (!link) { toast('无可复制链接'); return; }
+    function fallback() {
+      var ta = document.createElement('textarea');
+      ta.value = link; ta.style.position = 'fixed'; ta.style.opacity = '0';
+      document.body.appendChild(ta); ta.select();
+      try { document.execCommand('copy'); toast('链接已复制'); } catch (e) { toast('复制失败，请手动复制'); }
+      document.body.removeChild(ta);
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(link).then(function () { toast('链接已复制'); },
+        function () { fallback(); });
+    } else { fallback(); }
+  }
+
+  // 复制（"复制"操作）：进入抽屉展示链接并提示可复制，等价于分享的文件链接
+  function doCopy(item) { doShare(item); }
+
+  // 详情：显示文件大小/时间等元数据
+  function doInfo(item) {
+    var msg = (item.FileName || '') + '\n大小：' + fmtSize(item.Size) + '\n修改时间：' + (item.ModifyTime || '-');
+    toast(msg);
+  }
+
+  // 新建文件夹
+  function doNewFolder() {
+    var name = $('newfolder-input').value.trim();
+    if (!name) { toast('请输入文件夹名称'); return; }
+    // 123pan 新建文件夹：POST /a/api/file/upload_request，type=1 表示文件夹，size=0
+    api('POST', API.mkdir,
+      JSON.stringify({
+        driveId: 0,
+        etag: '',
+        fileName: name,
+        parentFileId: state.currentDir,
+        size: 0,
+        type: 1,
+        duplicate: 1,
+        NotReuse: true
+      }),
+      true,
+      function (d) {
+        if (d && d.code === 0) {
+          hide($('newfolder-modal')); $('newfolder-input').value = '';
+          toast('文件夹已创建'); loadList();
+        } else {
+          toast((d && d.message) || '创建失败');
+        }
+      });
+  }
+
+  // 上传：触发隐藏的 <input type=file>（需原生 setShowFileChooser 支持）
+  function doUpload() {
+    var inp = $('upload-input');
+    if (!inp) return;
+    toast('请选择要上传的文件');
+    inp.click();
+  }
+
+  // 原生侧完成文件选择后回调：paths 为本地临时文件路径数组。
+  // 流程：file/upload_request 获取预签名地址 -> 上传字节 -> 结束确认
+  window.__onFilesPicked = function (paths) {
+    if (!paths || !paths.length) return;
+    var list = (typeof paths === 'string') ? JSON.parse(paths) : paths;
+    for (var i = 0; i < list.length; i++) {
+      var p = list[i];
+      doUploadOne(p);
+    }
+  };
+
+  var _upBusy = false;
+  function doUploadOne(path) {
+    if (!path) return;
+    var fname = String(path).split('/').pop() || ('file_' + Date.now());
+    // 原生上传通道：由 NativeBridge.uploadFiles 读取本地文件并完成 123pan 上传
+    if (bridge && bridge.uploadFiles) {
+      bridge.uploadFiles(path, state.currentDir, '_cb_up_' + Date.now() + '_' + Math.floor(Math.random()*1e6));
+      return;
+    }
+    // 兜底：仅提示（不应到达）
+    toast('上传通道未就绪：' + fname);
+  }
+
+  // 原生上传结果回调
+  window.__onUploadDone = function (ok, msg) {
+    if (ok) {
+      toast(msg || '上传成功');
+      if (state.view === 'files') loadList();
+    } else {
+      toast('上传失败：' + (msg || '未知错误'));
+    }
+  };
+
+  // ---------- 我的页 ----------
+  function loadMine() {
+    $('mine-name').textContent = state.user || '未登录';
+    $('mine-id').textContent = state.token ? '已登录' : '未登录';
+    $('mine-avatar').textContent = (state.user || '用').charAt(0);
+    $('mine-version').textContent = bridge && bridge.getVersion ? bridge.getVersion() : '1.6.0';
+    api('GET', API.userInfo, '', true, function (d) {
+      if (d && d.data) {
+        var u = d.data;
+        if (u.nickName) $('mine-name').textContent = u.nickName;
+        if (u.vipName) $('mine-id').textContent = u.vipName;
+        var total = Number(u.usedSize || 0) + Number(u.freeSize || 0);
+        if (total > 0) $('mine-quota-val').textContent =
+          '已用 ' + fmtSize(u.usedSize) + ' / 共 ' + fmtSize(total);
+      }
+    });
+  }
+
+  function doLogout() {
+    if (bridge.clearSession) bridge.clearSession();
+    state.token = '';
+    state.user = '';
+    state.currentDir = 0;
+    state.breadcrumb = [];
+    show($('page-login'));
+    hide($('page-main'));
+    toast('已退出登录');
+  }
+
+  // ---------- Android 返回键 ----------
+  window.__handleBack = function () {
+    // 优先关闭弹出的浮层/弹窗
+    if (!$('confirm-modal').classList.contains('hidden')) { hide($('confirm-modal')); state.confirmOk = null; return true; }
+    if (!$('share-config-modal').classList.contains('hidden')) { hide($('share-config-modal')); return true; }
+    if (!$('newfolder-modal').classList.contains('hidden')) { hide($('newfolder-modal')); return true; }
+    if (!$('share-modal').classList.contains('hidden')) { hide($('share-modal')); return true; }
+    if (!$('rename-modal').classList.contains('hidden')) { hide($('rename-modal')); return true; }
+    if (!$('action-sheet').classList.contains('hidden')) { hide($('action-sheet')); return true; }
+    // 再回退文件目录
+    if (state.view === 'files' && state.currentDir !== 0) {
+      var last = state.breadcrumb.pop() || { id: 0 };
+      state.currentDir = last.id;
+      loadList();
+      return true;
+    }
+    // 无更多可回退：退出
+    if (bridge && bridge.exitApp) bridge.exitApp();
+    else {
+      // 兜底：用 History API
+      if (window.history && window.history.back) window.history.back();
+    }
+    return true;
+  };
+
+  // ---------- 初始化 ----------
+  function init() {
+    // 底部标签切换
+    document.querySelectorAll('#tabbar .tab').forEach(function (tab) {
+      tab.addEventListener('click', function () {
+        switchView(tab.getAttribute('data-view'));
+      });
+    });
+    // 登录
+    $('login-btn').addEventListener('click', doLogin);
+    $('login-pass').addEventListener('keydown', function (e) { if (e.key === 'Enter') doLogin(); });
+    // 扫码登录：tab 切换 + 刷新按钮
+    document.querySelectorAll('.login-tab').forEach(function (t) {
+      t.addEventListener('click', function () {
+        switchLoginTab(t.getAttribute('data-logintab'));
+      });
+    });
+    $('qr-refresh').addEventListener('click', function () {
+      stopQrPolling();
+      startQrLogin();
+    });
+    // 重命名
+    $('rename-ok').addEventListener('click', doRename);
+    // 自定义确认弹窗：点"确定"执行回调
+    $('cf-ok').addEventListener('click', onCfOk);
+    // 新建文件夹
+    $('tool-newfolder').addEventListener('click', function () {
+      $('newfolder-input').value = '';
+      show($('newfolder-modal'));
+    });
+    $('newfolder-ok').addEventListener('click', doNewFolder);
+    $('newfolder-input').addEventListener('keydown', function (e) { if (e.key === 'Enter') doNewFolder(); });
+    // 上传
+    $('tool-upload').addEventListener('click', doUpload);
+    $('upload-input').addEventListener('change', function () {
+      var files = this.files;
+      if (!files || !files.length) return;
+      var names = [];
+      for (var i = 0; i < Math.min(files.length, 5); i++) names.push(files[i].name);
+      toast('已选择 ' + files.length + ' 个文件（' + names.join('、') + '…）\n原生上传通道待接入');
+      this.value = '';
+    });
+    // 分享弹窗复制链接
+    $('share-copy').addEventListener('click', doCopyLink);
+    // 创建分享：确认按钮 + 自定义提取码切换
+    $('sc-create').addEventListener('click', doCreateShare);
+    document.querySelectorAll('input[name="sc-pwd"]').forEach(function (rd) {
+      rd.addEventListener('change', function () {
+        var showCustom = rd.value === '3';
+        if (showCustom) show($('sc-custom'));
+        else hide($('sc-custom'));
+      });
+    });
+    // 清空回收站
+    var clearRecycleBtn = $('recycle-clear');
+    if (clearRecycleBtn) clearRecycleBtn.addEventListener('click', recycleClearAll);
+    // 退出
+    $('logout-btn').addEventListener('click', doLogout);
+    // 关闭浮层/弹窗（data-close）
+    document.querySelectorAll('[data-close]').forEach(function (el) {
+      el.addEventListener('click', function () {
+        el.closest && el.closest('.sheet') && hide(el.closest('.sheet'));
+        el.closest && el.closest('.modal') && hide(el.closest('.modal'));
+      });
+    });
+    // 初始：检查登录态
+    var t = loadToken();
+    if (t) {
+      state.token = t;
+      enterMain();
+    } else {
+      show($('page-login'));
+      hide($('page-main'));
+      startQrLogin(); // 默认扫码登录优先
+    }
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init);
+  } else {
+    init();
+  }
+})();

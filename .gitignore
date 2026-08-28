@@ -1,0 +1,22 @@
+# Build outputs
+build/
+*.apk
+*.aab
+
+# Keystore & signing secrets (never commit)
+*.keystore
+*.jks
+*.p12
+keystore.properties
+local.properties
+
+# IDE
+.idea/
+*.iml
+.gradle/
+.DS_Store
+
+# Generated
+out/
+bin/
+gen/
