@@ -21,7 +21,10 @@
     qrPaused: false,          // App 在后台时 true，暂停轮询
     qrExpired: false,          // 二维码是否已过期
     transfers: loadTransfers(), // 下载任务列表 [{name,size,status,time}]
-    progTimer: null          // 下载进度轮询定时器
+    progTimer: null,          // 下载进度轮询定时器
+    searching: false,         // 是否处于全局搜索态
+    searchKeyword: '',        // 当前搜索关键词
+    searchTotal: 0            // 搜索命中总数
   };
 
   var API = {
@@ -108,7 +111,9 @@
     table: '<rect x="3" y="3" width="18" height="18" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M3 9h18M3 15h18M9 3v18" fill="none" stroke="currentColor" stroke-width="2"/>',
     text: '<path d="M4 6V4h16v2M12 4v16M9 20h6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
     code: '<path d="M8 6l-6 6 6 6M16 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
-    apk: '<circle cx="5.5" cy="10.5" r="1.5" fill="currentColor" stroke="none"/><circle cx="18.5" cy="10.5" r="1.5" fill="currentColor" stroke="none"/><path d="M6.5 7h11a4 4 0 0 1 4 4v4.5a3 3 0 0 1-3 3H5.5a3 3 0 0 1-3-3V11a4 4 0 0 1 4-4z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M7.7 6V3.8M16.3 6V3.8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>'
+    apk: '<circle cx="5.5" cy="10.5" r="1.5" fill="currentColor" stroke="none"/><circle cx="18.5" cy="10.5" r="1.5" fill="currentColor" stroke="none"/><path d="M6.5 7h11a4 4 0 0 1 4 4v4.5a3 3 0 0 1-3 3H5.5a3 3 0 0 1-3-3V11a4 4 0 0 1 4-4z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M7.7 6V3.8M16.3 6V3.8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>',
+    search: '<circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" stroke-width="2"/><path d="M21 21l-4.3-4.3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>',
+    'x-circle': '<circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="2"/><path d="M15 9l-6 6M9 9l6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>'
   };
   function applySvg(el, name) {
     var inner = ICON_SVG[name];
@@ -541,10 +546,87 @@
     });
   }
 
+  // ---------- 全局搜索（全盘文件） ----------
+  function doSearch(keyword) {
+    keyword = (keyword || '').trim();
+    if (!keyword) { exitSearch(); return; }
+    state.searching = true;
+    state.searchKeyword = keyword;
+    var box = $('file-list');
+    box.innerHTML = '<div class="loading-dot">加载中...</div>';
+    hide($('breadcrumb'));
+    // 全盘搜索：parentFileId=0，用 SearchData 传关键词（123pan 全局搜索协议）
+    var params = 'driveId=0&limit=200&next=0&orderBy=file_id&orderDirection=desc'
+      + '&parentFileId=0&trashed=false&Page=1&OnlyLookAbnormalFile=0'
+      + '&SearchData=' + encodeURIComponent(keyword);
+    api('GET', API.list + '?' + params, '', true, function (d) {
+      if (d && d.data) {
+        state.searchTotal = d.data.Total || 0;
+        renderSearchResult(d.data.InfoList || [], state.searchTotal, keyword);
+      } else {
+        box.innerHTML = '<div class="panel-empty"><div class="panel-icon" data-icon="search"></div><p>搜索失败或需重新登录</p></div>';
+        injectIcons(box);
+      }
+    });
+  }
+  function renderSearchResult(list, total, kw) {
+    var box = $('file-list');
+    box.innerHTML = '';
+    var head = document.createElement('div');
+    head.className = 'search-summary';
+    head.textContent = (list.length ? ('搜索「' + kw + '」共 ' + total + ' 项') : ('未找到「' + kw + '」相关文件'));
+    box.appendChild(head);
+    if (!list || !list.length) {
+      var empty = document.createElement('div');
+      empty.className = 'panel-empty';
+      var ic = document.createElement('div'); ic.className = 'panel-icon'; ic.setAttribute('data-icon', 'search'); applySvg(ic, 'search');
+      empty.appendChild(ic);
+      var p = document.createElement('p'); p.textContent = '没有匹配的文件';
+      empty.appendChild(p);
+      box.appendChild(empty);
+      return;
+    }
+    list.forEach(function (item) {
+      var card = document.createElement('div');
+      card.className = 'file-card';
+      var iconWrap = document.createElement('div');
+      iconWrap.className = 'file-icon-wrap fi-' + iconFor(item);
+      iconWrap.appendChild(makeIcon(iconFor(item), 'file-icon'));
+      var body = document.createElement('div'); body.className = 'file-body';
+      var name = document.createElement('div'); name.className = 'file-name'; name.textContent = item.FileName || '未命名';
+      var meta = document.createElement('div'); meta.className = 'file-meta';
+      // 搜索结果：额外显示文件所在位置（NewParentName / ParentName）
+      var loc = item.NewParentName || item.ParentName || '';
+      meta.textContent = (item.Type === 1 ? '文件夹' : fmtSize(item.Size)) + (loc ? ' · ' + loc : '');
+      body.appendChild(name); body.appendChild(meta);
+      card.appendChild(iconWrap); card.appendChild(body);
+      card.addEventListener('click', function () {
+        openActionSheet(item);   // 文件/文件夹均弹出操作浮层（文件夹含"打开"入口）
+      });
+      box.appendChild(card);
+    });
+  }
+  function exitSearch() {
+    state.searching = false;
+    state.searchKeyword = '';
+    var input = $('search-input');
+    if (input) input.value = '';
+    var sc = $('search-clear');
+    if (sc) hide(sc);
+    show($('breadcrumb'));
+    loadList();
+  }
+
   // ---------- 操作浮层（九宫格） ----------
   // 打开文件夹：进入目录
   function openDir(item) {
     closeSheet();
+    // 若从搜索结果进入文件夹，先退出搜索态，恢复面包屑（保留进入的目录）
+    if (state.searching) {
+      state.searching = false;
+      state.searchKeyword = '';
+      show($('breadcrumb'));
+    }
     state.breadcrumb.push({ id: item.FileId, name: item.FileName });
     state.currentDir = item.FileId;
     loadList();
@@ -1084,6 +1166,8 @@
 
   // ---------- 初始化 ----------
   function init() {
+    // 注入所有静态 data-icon 图标（含搜索栏 search/x-circle、tab、工具栏等）
+    injectIcons();
     // 底部标签切换
     document.querySelectorAll('#tabbar .tab').forEach(function (tab) {
       tab.addEventListener('click', function () {
@@ -1124,6 +1208,28 @@
       toast('已选择 ' + files.length + ' 个文件（' + names.join('、') + '…）\n原生上传通道待接入');
       this.value = '';
     });
+    // 全盘搜索
+    var searchInput = $('search-input');
+    var searchClear = $('search-clear');
+    if (searchInput) {
+      // 回车触发搜索
+      searchInput.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter') { doSearch(searchInput.value); }
+      });
+      // 输入变化：非空时显示清除按钮，清空时隐藏并退出搜索
+      searchInput.addEventListener('input', function () {
+        if (searchClear) {
+          if (searchInput.value.trim()) show(searchClear);
+          else hide(searchClear);
+        }
+      });
+    }
+    if (searchClear) {
+      searchClear.addEventListener('click', function () {
+        exitSearch();
+        if (searchInput) searchInput.focus();
+      });
+    }
     // 分享弹窗复制链接
     $('share-copy').addEventListener('click', doCopyLink);
     // 创建分享：确认按钮 + 自定义提取码切换

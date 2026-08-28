@@ -55,6 +55,12 @@
     <main id="content">
       <!-- 文件视图 -->
       <section id="view-files" class="view">
+        <!-- 全局搜索栏 -->
+        <div id="search-bar">
+          <span class="search-icon" data-icon="search"></span>
+          <input id="search-input" type="text" placeholder="搜索全盘文件" autocomplete="off" enterkeyhint="search">
+          <span id="search-clear" class="search-clear hidden" data-icon="x-circle"></span>
+        </div>
         <div id="breadcrumb"></div>
         <div id="file-list"></div>
         <!-- 底部工具栏：上传 / 新建 -->

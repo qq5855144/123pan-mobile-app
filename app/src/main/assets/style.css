@@ -73,6 +73,28 @@ svg { display: block; }
 #content { flex: 1; overflow-y: auto; padding: 10px 12px 96px; }
 .view { height: 100%; }
 
+/* ---------- 全局搜索栏 ---------- */
+#search-bar {
+  display: flex; align-items: center; gap: 8px;
+  background: #f2f3f5; border-radius: 10px; padding: 8px 12px; margin: 2px 0 10px;
+}
+#search-bar .search-icon { width: 18px; height: 18px; color: #8a93a6; flex: 0 0 auto; }
+#search-bar .search-icon svg { width: 18px; height: 18px; }
+#search-input {
+  flex: 1; min-width: 0; border: none; outline: none; background: transparent;
+  font-size: 14px; color: #1a1a1a;
+}
+#search-input::placeholder { color: #a4adb9; }
+#search-clear {
+  width: 20px; height: 20px; flex: 0 0 auto; color: #9aa2b1; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+}
+#search-clear svg { width: 18px; height: 18px; }
+/* 搜索命中提示条 */
+.search-summary {
+  padding: 10px 12px 6px; font-size: 13px; color: #6b7280; font-weight: 600;
+}
+
 /* ---------- 文件列表 ---------- */
 #breadcrumb {
   display: flex; align-items: center; flex-wrap: wrap; padding: 6px 4px 10px; overflow-x: auto;
