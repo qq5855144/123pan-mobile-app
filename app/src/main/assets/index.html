@@ -12,25 +12,13 @@
   <div id="page-login" class="page hidden">
     <div class="login-wrap">
       <div class="login-logo">123<span>云盘</span></div>
-      <div class="login-sub">移动端 · 复刻 123pan-open</div>
 
       <div class="login-tabs">
-        <div class="login-tab active" data-logintab="qr">扫码登录</div>
-        <div class="login-tab" data-logintab="pwd">账号登录</div>
-      </div>
-
-      <!-- 扫码登录 -->
-      <div id="login-qr-panel" class="login-panel">
-        <div class="qr-box">
-          <img id="qr-img" alt="二维码" class="qr-img">
-          <div id="qr-status" class="qr-status">点击下方刷新获取二维码</div>
-        </div>
-        <button id="qr-refresh" class="btn-primary">刷新二维码</button>
-        <div class="qr-tip">使用微信或 123云盘 App 扫码，并确认登录</div>
+        <div class="login-tab active" data-logintab="pwd">账号登录</div>
       </div>
 
       <!-- 账号密码登录 -->
-      <div id="login-pwd-panel" class="login-panel hidden">
+      <div id="login-pwd-panel" class="login-panel">
         <div class="field">
           <label>账号</label>
           <input id="login-user" type="text" placeholder="手机号 / 邮箱" autocomplete="username">

@@ -360,133 +360,23 @@
         }
       });
   }
+
   function enterMain() {
-    stopQrPolling();
     hide($('page-login'));
     show($('page-main'));
     switchView('files');
   }
 
-  // ---------- 扫码登录 ----------
-  function qrUrlEncode(s) {
-    return encodeURIComponent(s);
-  }
-  function stopQrPolling() {
-    if (state.qrTimer) { clearInterval(state.qrTimer); state.qrTimer = null; }
-  }
-  function startQrLogin() {
-    var img = $('qr-img');
-    var status = $('qr-status');
-    // 重置暂停/过期状态，确保新二维码轮询能正常开始
-    state.qrPaused = false;
-    state.qrExpired = false;
-    if (state.qrTimeout) { clearTimeout(state.qrTimeout); state.qrTimeout = null; }
-    img.src = '';
-    img.style.display = 'none';
-    status.textContent = '正在获取二维码...';
-    // 调用 generate 生成 uniID + url（无 Token 的公开接口）
-    api('GET', API.qrGenerate, '', false, function (d) {
-      if (d && d.code === 0 && d.data && d.data.uniID && d.data.url) {
-        state.qrUniID = d.data.uniID;
-        var content = d.data.url + '?env=production&uniID=' + d.data.uniID
-          + '&source=123pan&type=login';
-        // 用在线二维码服务生成图片
-        img.src = 'http://api.qrserver.com/v1/create-qr-code/?size=230x230&data='
-          + qrUrlEncode(content);
-        img.style.display = 'block';
-        status.textContent = '请使用微信或 123 云盘 App 扫码';
-        stopQrPolling();
-        pollQrStatus();
-      } else {
-        status.textContent = '获取二维码失败：' + (d && (d.error || d.message) ? (d.error || d.message) : '网络异常');
-      }
-    });
-  }
-  function pollQrStatus() {
-    stopQrPolling();
-    state.qrExpired = false;
-    state.qrTimer = setInterval(function () {
-      if (!state.qrUniID) return;
-      if (state.qrPaused) return;   // App 在后台：暂停轮询，避免过量 binder 流量
-      var url = API.qrResult + '?uniID=' + state.qrUniID;
-      api('GET', url, '', false, function (d) {
-        if (state.qrPaused) return; // 请求期间被暂停则丢弃结果
-        // code 0 表示接口正常
-        if (d && d.code === 0 && d.data) {
-          var token = d.data.token || d.data.authorization || '';
-          // 已确认登录则拿到 token
-          if (token) {
-            if (token.indexOf('Bearer ') === 0) token = token.slice(7);
-            state.token = token;
-            state.user = '';
-            bridge.saveSession(token, '', '');
-            stopQrPolling();
-            state.qrExpired = false;
-            state.qrPaused = false;
-            toast('扫码登录成功');
-            enterMain();
-            return;
-          }
-          // 0=等待扫码, 1=已扫码待确认, 其它状态提示
-          var st = d.data.loginStatus;
-          var msg = $('qr-status');
-          if (st === 0) {
-            msg.textContent = '等待扫码...';
-            state.qrExpired = false;
-          } else if (st === 1) {
-            msg.textContent = '已扫码，请在手机上确认';
-          } else {
-            msg.textContent = '状态码 ' + st + '，如需重试请刷新';
-          }
-        } else {
-          // 接口异常：停止，避免频繁请求
-          stopQrPolling();
-          $('qr-status').textContent = '轮询异常：' + (d && d.message ? d.message : '网络错误');
-        }
-      });
-    }, 3000);
-    // 90 秒超时：仅提示二维码过期并停止轮询，不再自动递归刷新。
-    // 此前此处 setTimeout 递归 startQrLogin()，会形成 "60s 未登录→刷新二维码→
-    // 又 60s→再刷新" 的无限循环，后台持续请求导致 CPU/RSS 过高被系统杀死。
-    if (state.qrTimeout) { clearTimeout(state.qrTimeout); state.qrTimeout = null; }
-    state.qrExpired = false;
-    state.qrTimeout = setTimeout(function () {
-      if (state.qrTimer && !state.token) {
-        stopQrPolling();
-        state.qrExpired = true;
-        var msg = $('qr-status');
-        if (msg) msg.textContent = '二维码已过期，请点击刷新';
-      }
-    }, 90000);
-  }
-
-  // App 切后台：暂停扫码轮询（由原生 onPause 调用）
-  window.__onAppPause = function () {
-    state.qrPaused = true;
-    stopQrPolling();
-  };
-  // App 回前台：若仍在扫码登录页且无 token，恢复轮询（由原生 onResume 调用）
-  window.__onAppResume = function () {
-    state.qrPaused = false;
-    if (!state.token && state.qrUniID && $('page-login') && !$('page-login').classList.contains('hidden')) {
-      if (!state.qrTimer && !state.qrExpired) pollQrStatus();
-      else if (state.qrExpired) {
-        var msg = $('qr-status');
-        if (msg) msg.textContent = '二维码已过期，请点击刷新';
-      }
-    }
-  };
+  // App 切后台钩子（由原生 onPause 调用；已移除扫码登录，无需额外处理）
+  window.__onAppPause = function () {};
+  // App 回前台钩子（由原生 onResume 调用）
+  window.__onAppResume = function () {};
+  // 登录方式切换（仅账号密码登录，此函数保留以防 tab 被点击时兜底）
   function switchLoginTab(tab) {
-    var isQr = (tab === 'qr');
     document.querySelectorAll('.login-tab').forEach(function (t) {
       t.classList.toggle('active', t.getAttribute('data-logintab') === tab);
     });
-    $('login-qr-panel').classList.toggle('hidden', !isQr);
-    $('login-pwd-panel').classList.toggle('hidden', isQr);
-    if (isQr) {
-      stopQrPolling();
-      startQrLogin();
-    }
+    $('login-pwd-panel').classList.remove('hidden');
   }
 
 
@@ -1209,15 +1099,11 @@
     // 登录
     $('login-btn').addEventListener('click', doLogin);
     $('login-pass').addEventListener('keydown', function (e) { if (e.key === 'Enter') doLogin(); });
-    // 扫码登录：tab 切换 + 刷新按钮
+    // 账号密码登录：tab 切换
     document.querySelectorAll('.login-tab').forEach(function (t) {
       t.addEventListener('click', function () {
         switchLoginTab(t.getAttribute('data-logintab'));
       });
-    });
-    $('qr-refresh').addEventListener('click', function () {
-      stopQrPolling();
-      startQrLogin();
     });
     // 重命名
     $('rename-ok').addEventListener('click', doRename);
@@ -1293,7 +1179,6 @@
     } else {
       show($('page-login'));
       hide($('page-main'));
-      startQrLogin(); // 默认扫码登录优先
     }
   }
 
