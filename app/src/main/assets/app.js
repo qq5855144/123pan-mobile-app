@@ -185,7 +185,7 @@
   }
   function addTransfer(t) {
     if (!state.transfers) state.transfers = [];
-    state.transfers.unshift({ id: t.id || -1, name: t.name || '', size: t.size, status: t.status || 'downloading', done: 0, total: 0, time: Date.now() });
+    state.transfers.unshift({ id: t.id || -1, name: t.name || '', size: t.size, status: t.status || 'downloading', done: 0, total: t.total || 0, stream: !!t.stream, time: Date.now() });
     saveTransfers();
   }
   function statusLabel(st, done, total) {
@@ -209,26 +209,55 @@
   function stopProgressPolling() {
     if (state.progTimer) { clearInterval(state.progTimer); state.progTimer = null; }
   }
-  // 轮询 DownloadManager，按 id/name 匹配更新传输任务进度与状态；完成态保留"已完成"
+  // 轮询下载进度：同时支持 DownloadManager 任务与自研流式任务（stream）。
+  // 关键修复：不再无条件把 status===8 当作"完成"——对 DownloadManager 任务，
+  // 若状态为成功但实际字节数 < total，视为"下载中/异常"而非完成，避免"未下完就显示完成"。
   function pollDownloadProgress() {
     if (!(bridge && bridge.queryDownloads)) return;
     try {
       var list = JSON.parse(bridge.queryDownloads() || '[]');
-      if (!Array.isArray(list) || !list.length || !state.transfers) return;
+      // 自研流式任务列表（id >= 900000000）
+      var slist = [];
+      if (bridge.streamingTasks) {
+        try { slist = JSON.parse(bridge.streamingTasks() || '[]'); } catch (e) {}
+      }
+      if ((!Array.isArray(list) || !list.length) && (!Array.isArray(slist) || !slist.length)) return;
+      if (!state.transfers) return;
       var nameToStatus = {};
-      list.forEach(function (dl) { nameToStatus[dl.name] = dl; });
+      (list).forEach(function (dl) { nameToStatus[dl.name] = dl; });
       var changed = false;
       state.transfers.forEach(function (t) {
         var hit = null;
-        if (t.id >= 0) { list.forEach(function (x) { if (Number(x.id) === Number(t.id)) hit = x; }); }
+        // 自研流式任务优先按 id 匹配 streaming 列表
+        if (t.stream && slist.length) {
+          slist.forEach(function (x) { if (Number(x.id) === Number(t.id)) hit = x; });
+        }
+        if (!hit && t.id >= 0 && list.length) {
+          list.forEach(function (x) { if (Number(x.id) === Number(t.id)) hit = x; });
+        }
         if (!hit && t.name) hit = nameToStatus[t.name] || null;
         if (hit) {
-          // 已完成后不再覆盖回"下载中"
           if (t.status === 'completed') return;
           var st = Number(hit.status);
-          t.done = Number(hit.done) || 0;
-          t.total = Number(hit.total) || 0;
-          if (st === 8) { t.status = 'completed'; }
+          var done = Number(hit.done) || 0;
+          var total = Number(hit.total) || 0;
+          // 用请求时记录的期望大小兜底（stream 任务的 total 以后端为准，避免被 0 覆盖）
+          var expect = Number(t.total) || Number(t.size) || 0;
+          t.done = done;
+          t.total = total;
+          if (st === 8) {
+            if (t.stream) {
+              // 流式任务：必须实际大小>0 且 done>=期望大小才标记完成，杜绝"未下完显完成"
+              // 期望大小取后端返回的 total；若后端未知则用前端 fsize 兜底；再未知则保守不完成
+              var ref = (total > 0 ? total : expect);
+              if (ref > 0 && done >= ref) { t.status = 'completed'; }
+              else { t.status = 'downloading'; } // 字节不足或大小未知 -> 仍视为下载中
+            } else {
+              // DownloadManager 任务：严格用实际 done>=total 才完成，未知大小不判完成
+              if (total > 0 && done >= total) { t.status = 'completed'; }
+              else { t.status = 'downloading'; }
+            }
+          }
           else if (st === 16) { t.status = 'failed'; }
           else { t.status = 'downloading'; }
           changed = true;
@@ -874,22 +903,25 @@
       var link = pickDownloadUrl(d);
       if (link) {
         var fname = item.FileName || item.fileName || (Date.now() + '');
+        var fsize = Number(item.Size) || Number(item.size) || Number(item.FileSize) || 0;
         var started = false;
         var genId = -1;
-        // 优先走原生 DownloadManager（真正落盘到 Download 目录）
-        if (bridge && bridge.download) {
+        var isStream = false;
+        // 自研流式下载（带认证头 + 多级直链解析 + 严格字节校验，杜绝"未下完就显示完成"）
+        // 注意：不再回退到 DownloadManager —— 其用默认 UA 直连会被服务端拦截返回错误小文件
+        //       （5344 字节 HTML），且自身也会把"部分下载"误标为成功，制造损坏 apk。宁可明确失败让用户重试。
+        if (bridge && bridge.downloadStream) {
           try {
-            genId = Number(bridge.download(link, fname));
+            genId = Number(bridge.downloadStream(link, fname, fsize));
             started = genId >= 0;
+            isStream = started;
           } catch (e) { started = false; }
         }
         if (!started) {
-          // 回退：新窗口触发（原生 setDownloadListener 接管）
-          var a = document.createElement('a');
-          a.href = link; a.target = '_blank'; a.rel = 'noopener';
-          document.body.appendChild(a); a.click(); a.remove();
+          toast('下载启动失败，请重试');
+          return; // 不回退，避免 DownloadManager 假完成造成损坏文件
         }
-        addTransfer({ id: genId, name: fname, size: item.Size || item.size, status: 'downloading' });
+        addTransfer({ id: genId, name: fname, size: fsize, total: fsize, status: 'downloading', stream: isStream });
         startProgressPolling();
         toast('已加入下载任务');
       } else {

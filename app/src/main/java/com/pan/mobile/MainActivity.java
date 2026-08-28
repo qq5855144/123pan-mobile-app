@@ -76,6 +76,19 @@ public class MainActivity extends Activity {
     private String deviceType = "X12";
     private String osVersion = "13";
     private String devicename = "Xiaomi";
+
+    // 自研流式下载任务状态表：taskId -> {done, total, expected, status}
+    // status: 1=下载中 8=成功 16=失败。仅当实际写入字节数 >= expected 才置为 8。
+    private final java.util.Map<Long, long[]> streamTasks =
+        new java.util.concurrent.ConcurrentHashMap<>();
+    // stream 任务成功落盘后的文件绝对路径：taskId -> path（供 openDownloadedFile 定位）
+    private final java.util.Map<Long, String> streamTaskFiles =
+        new java.util.concurrent.ConcurrentHashMap<>();
+    // stream 任务成功后的 MediaStore content URI：taskId -> content://media/external/downloads/<id>
+    // （打开/安装优先用它，避免 PanProvider path 解析问题导致安装器读到损坏内容）
+    private final java.util.Map<Long, String> streamTaskUris =
+        new java.util.concurrent.ConcurrentHashMap<>();
+    private long nextTaskId = 900000000L;
     private String baseHeaders =
         "platform=android;app-version=61;x-app-version=2.4.0;user-agent=123pan/v2.4.0("
         + osVersion + ";Xiaomi)";
@@ -370,6 +383,342 @@ public class MainActivity extends Activity {
         return r;
     }
 
+    // ============ 自研流式下载（严格校验字节完整性） ============
+    // 根因：系统 DownloadManager 用默认 UA 直连 123pan 下载直链时，可能被服务端
+    // 重定向/拦截返回错误页或截断内容，却标记 STATUS_SUCCESSFUL(8)，导致"未下载完就显示完成"。
+    // 自研下载器带上与 API 一致的认证头请求直链，并按 expectedSize 严格校验，
+    // 只有真实写盘字节数 >= 期望大小才标记成功(status 8)，否则标记失败(16)。
+    // 123pan 的 DownloadUrl 可能是 download-v2/?params= 中转跳转页，需递归解析出真实 CDN 直链。
+    // 返回任务 id（>=900000000 表示原生任务）；失败返回 -1。
+    public long downloadStream(final String url, final String filename, final long expectedSize) {
+        try {
+            final String fname = sanitizeFileName(filename);
+            final long taskId = nextTaskId++;
+            streamTasks.put(taskId, new long[]{ 0, 0, expectedSize, 1 }); // done,total,expected,status
+            logDl("downloadStream CALLED fname=" + fname + " expected=" + expectedSize + " url=" + url);
+            final MainActivity act = this;
+            executor.execute(new Runnable() {
+                @Override public void run() {
+                    long[] st = streamTasks.get(taskId);
+                    java.io.OutputStream out = null;
+                    HttpURLConnection conn = null;
+                    android.net.Uri itemUri = null;
+                    try {
+                        // ---- 多级解析最终真实下载直链 ----
+                        String finalUrl = resolveRealDownloadUrl(url, fname);
+                        logDl("resolve finalUrl=" + finalUrl);
+                        if (finalUrl == null) {
+                            st[3] = 16;
+                            logDl("resolve FAILED (no real url) " + fname);
+                            return;
+                        }
+                        conn = (HttpURLConnection) new URL(finalUrl).openConnection();
+                        conn.setConnectTimeout(20000);
+                        conn.setReadTimeout(120000);
+                        conn.setRequestMethod("GET");
+                        conn.setInstanceFollowRedirects(true);
+                        String token = prefs.getString(KEY_TOKEN, "");
+                        conn.setRequestProperty("user-agent", "123pan/v2.4.0(" + osVersion + ";Xiaomi)");
+                        conn.setRequestProperty("authorization", token.isEmpty() ? "" : "Bearer " + token);
+                        conn.setRequestProperty("osversion", osVersion);
+                        conn.setRequestProperty("platform", "web");
+                        conn.setRequestProperty("devicetype", deviceType);
+                        conn.setRequestProperty("devicename", devicename);
+                        conn.setRequestProperty("app-version", "61");
+                        conn.setRequestProperty("x-app-version", "2.4.0");
+                        conn.setRequestProperty("Origin", "https://yun.123pan.cn");
+                        conn.setRequestProperty("Referer", "https://yun.123pan.cn/");
+                        int code = conn.getResponseCode();
+                        logDl("stream dl HTTP " + code + " for " + fname + " len=" + conn.getContentLengthLong()
+                            + " tokenEmpty=" + (token == null || token.isEmpty()));
+                        if (code < 200 || code >= 300) {
+                            st[3] = 16; // 失败
+                            Log.e("PAN", "stream dl HTTP " + code + " for " + fname);
+                            return;
+                        }
+                        long contentLen = conn.getContentLengthLong();
+                        if (st != null) st[1] = contentLen > 0 ? contentLen : expectedSize;
+                        // 用 MediaStore 写入公共 Download（Android 10+ 无写权限也可写，文件对其他 App 可见/可安装）
+                        android.content.ContentValues cv = new android.content.ContentValues();
+                        cv.put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, fname);
+                        String mime = fname != null && fname.toLowerCase().endsWith(".apk")
+                            ? "application/vnd.android.package-archive"
+                            : "application/octet-stream";
+                        cv.put(android.provider.MediaStore.MediaColumns.MIME_TYPE, mime);
+                        cv.put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS);
+                        cv.put(android.provider.MediaStore.MediaColumns.IS_PENDING, 1);
+                        itemUri = act.getContentResolver().insert(
+                            android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, cv);
+                        logDl("MediaStore insert uri=" + (itemUri != null ? itemUri.toString() : "NULL"));
+                        if (itemUri == null) { st[3] = 16; Log.e("PAN", "stream dl: MediaStore insert fail"); return; }
+                        java.io.InputStream in = conn.getInputStream();
+                        out = act.getContentResolver().openOutputStream(itemUri, "wa");
+                        if (out == null) { st[3] = 16; logDl("MediaStore openOutputStream NULL"); return; }
+                        byte[] buf = new byte[65536];
+                        long written = 0;
+                        int n;
+                        while ((n = in.read(buf)) > 0) {
+                            out.write(buf, 0, n);
+                            written += n;
+                            if (st != null) st[0] = written;
+                        }
+                        out.flush(); out.close(); out = null;
+                        // 清除"不可见"标记，让文件立即可见
+                        android.content.ContentValues pend = new android.content.ContentValues();
+                        pend.put(android.provider.MediaStore.MediaColumns.IS_PENDING, 0);
+                        act.getContentResolver().update(itemUri, pend, null, null);
+                        String realPath = queryMediaDataPath(act, itemUri);
+                        // 严格校验：实际写盘字节数必须 >= 期望字节（若期望已知）
+                        if (st != null) {
+                            if (expectedSize <= 0 || written >= expectedSize) {
+                                st[3] = 8; // 成功
+                                streamTaskFiles.put(taskId, realPath != null ? realPath : itemUri.toString());
+                                streamTaskUris.put(taskId, itemUri.toString()); // 供打开/安装优先用 MediaStore URI
+                                Log.d("PAN", "stream dl ok: " + fname + " id=" + taskId + " bytes=" + written);
+                                logDl("stream dl SUCCESS " + fname + " bytes=" + written + " expected=" + expectedSize);
+                            } else {
+                                st[3] = 16; // 字节数不足 -> 失败
+                                try { act.getContentResolver().delete(itemUri, null, null); } catch (Exception ignore) {}
+                                Log.w("PAN", "stream dl incomplete: " + fname + " got " + written
+                                    + " expected " + expectedSize);
+                                logDl("stream dl INCOMPLETE " + fname + " got=" + written + " expected=" + expectedSize);
+                            }
+                        }
+                    } catch (Exception e) {
+                        Log.e("PAN", "stream dl fail: " + (fname == null ? "" : fname) + " -> " + e, e);
+                        if (st != null) st[3] = 16;
+                        logDl("stream dl EXCEPTION " + fname + " -> " + e);
+                        if (itemUri != null) { try { act.getContentResolver().delete(itemUri, null, null); } catch (Exception ignore) {} }
+                    } finally {
+                        try { if (out != null) out.close(); } catch (Exception ignore) {}
+                        if (conn != null) conn.disconnect();
+                    }
+                }
+            });
+            Log.d("PAN", "stream dl enqueued: " + fname + " id=" + taskId + " expected=" + expectedSize);
+            return taskId;
+        } catch (Exception e) {
+            Log.e("PAN", "downloadStream fail: " + e, e);
+            logDl("downloadStream EXCEPTION " + e);
+            return -1;
+        }
+    }
+
+    // 解析 123pan 的多级下载直链，返回真正可直接流式下载的最终 CDN URL。
+    // 处理两种中转：
+    //  1) DownloadUrl 形如 ..../download-v2/?params=<base64>&is_s3=0 —— 直接 base64 解码 params 得真实 S3 直链
+    //  2) GET 真实 S3 直链若返回 HTTP 210 + JSON{code,data.redirect_url} —— 取其 redirect_url 作为最终 URL
+    // 返回最终直链；无法解析则返回 null。
+    private String resolveRealDownloadUrl(String url, String fname) {
+        try {
+            String cur = url;
+            for (int hop = 0; hop < 8; hop++) {
+                if (cur == null || cur.isEmpty()) return null;
+                logDl("resolve hop" + hop + " url=" + cur);
+                // 情况1：download-v2 中转页 —— 从 query 提取 params(base64) 解码出真实 S3 直链
+                int pIdx = cur.indexOf("params=");
+                if (cur.contains("download-v2") && pIdx >= 0) {
+                    String params = cur.substring(pIdx + "params=".length());
+                    int amp = params.indexOf('&');
+                    if (amp >= 0) params = params.substring(0, amp);
+                    // URL 解码
+                    params = java.net.URLDecoder.decode(params, "UTF-8");
+                    // base64 解码
+                    byte[] dec = android.util.Base64.decode(params, android.util.Base64.DEFAULT);
+                    if (dec != null && dec.length > 0) {
+                        String real = new String(dec, "UTF-8");
+                        cur = real;
+                        continue; // 跳到情况2 GET 试探
+                    }
+                }
+                // 对当前候选 URL 发起一次 GET 试探（仅读响应头/小体积响应体判断是否需再跳转）
+                HttpURLConnection c = (HttpURLConnection) new URL(cur).openConnection();
+                c.setConnectTimeout(15000);
+                c.setReadTimeout(20000);
+                c.setRequestMethod("GET");
+                c.setInstanceFollowRedirects(true);
+                String token = prefs.getString(KEY_TOKEN, "");
+                c.setRequestProperty("user-agent", "123pan/v2.4.0(" + osVersion + ";Xiaomi)");
+                c.setRequestProperty("authorization", token.isEmpty() ? "" : "Bearer " + token);
+                c.setRequestProperty("osversion", osVersion);
+                c.setRequestProperty("platform", "web");
+                c.setRequestProperty("devicetype", deviceType);
+                c.setRequestProperty("devicename", devicename);
+                c.setRequestProperty("app-version", "61");
+                c.setRequestProperty("x-app-version", "2.4.0");
+                c.setRequestProperty("Origin", "https://yun.123pan.cn");
+                c.setRequestProperty("Referer", "https://yun.123pan.cn/");
+                String ctype = c.getContentType();
+                int ccode = c.getResponseCode();
+                logDl("resolve probe HTTP " + ccode + " type=" + ctype + " len=" + c.getContentLengthLong());
+                // HTTP 210：服务端返回 JSON { message, data:{ redirect_url } }
+                if (ccode == 210) {
+                    java.io.InputStream es = c.getErrorStream();
+                    if (es == null) es = c.getInputStream();
+                    byte[] body = readAll(es, 65536);
+                    c.disconnect();
+                    String txt = body != null ? new String(body, "UTF-8") : "";
+                    logDl("resolve 210 body=" + (txt.length() > 120 ? txt.substring(0, 120) : txt));
+                    int ru = txt.indexOf("redirect_url");
+                    if (ru >= 0) {
+                        int st = txt.indexOf('"', ru + "redirect_url".length() + 2);
+                        if (st >= 0) {
+                            int en = txt.indexOf('"', st + 1);
+                            if (en > st) {
+                                String red = txt.substring(st + 1, en)
+                                    .replace("\\/", "/").replace("\\u0026", "&");
+                                cur = red;
+                                continue;
+                            }
+                        }
+                    }
+                    return null;
+                }
+                // HTTP 200 且是二进制流（application/octet-stream 或非 text/html）-> 最终直链
+                if (ccode >= 200 && ccode < 300) {
+                    boolean isHtml = ctype != null && ctype.toLowerCase().contains("text/html");
+                    if (!isHtml) {
+                        String finalUrl = cur;
+                        c.disconnect();
+                        return finalUrl;
+                    }
+                    // 仍是 html 壳（可能是别的中转），读 body 尝试从其中提取 downloadv2 参数
+                    java.io.InputStream is = c.getInputStream();
+                    byte[] body = readAll(is, 65536);
+                    c.disconnect();
+                    String txt = body != null ? new String(body, "UTF-8") : "";
+                    logDl("resolve html shell, try extract params, len=" + txt.length());
+                    // 某些中转页 body 里可能直接含 <a href=真实url>，简单尝试找 https:// 直链
+                    int hp = txt.indexOf("https://");
+                    if (hp >= 0) {
+                        int he = txt.indexOf('"', hp);
+                        int he2 = txt.indexOf('\'', hp);
+                        if (he < 0) he = he2;
+                        if (he > hp) {
+                            String cand = txt.substring(hp, he);
+                            if (cand.contains("download-cdn") || cand.contains("123773.com")
+                                || cand.contains("pd1.cjjd19") || cand.contains(".apk")
+                                || cand.contains("filename=")) {
+                                cur = cand;
+                                continue;
+                            }
+                        }
+                    }
+                    return null;
+                }
+                // 其它状态码 -> 失败
+                c.disconnect();
+                return null;
+            }
+            return cur;
+        } catch (Exception e) {
+            logDl("resolve EXCEPTION " + e);
+            return null;
+        }
+    }
+
+    // 读取流全部内容（限制 max），用于解析 210 JSON 或 html 壳；读不到返回 null。
+    private byte[] readAll(java.io.InputStream in, int max) {
+        try {
+            java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream();
+            byte[] buf = new byte[4096];
+            int n;
+            while ((n = in.read(buf)) > 0) {
+                bo.write(buf, 0, n);
+                if (bo.size() > max) break;
+            }
+            try { in.close(); } catch (Exception ignore) {}
+            return bo.toByteArray();
+        } catch (Exception e) { return null; }
+    }
+
+    // 诊断：把下载关键事件/异常写入公共 Download 目录的日志文件，便于 shell 读取排查。
+    // 用 MediaStore 写入（Android 10+ 无需写权限），保证 app 内能成功落盘到公共目录。
+    private void logDl(String msg) {
+        java.io.OutputStream os = null;
+        try {
+            String line = System.currentTimeMillis() + " " + msg + "\n";
+            Uri u = null;
+            try {
+                // 尝试打开已存在的日志文件（追加）
+                String[] proj = { android.provider.MediaStore.MediaColumns._ID };
+                android.database.Cursor c = getContentResolver().query(
+                    android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, proj,
+                    android.provider.MediaStore.MediaColumns.DISPLAY_NAME + "=?", 
+                    new String[]{"pan_dl_log.txt"}, null);
+                if (c != null) {
+                    if (c.moveToFirst()) {
+                        long id = c.getLong(0);
+                        u = android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI
+                            .buildUpon().appendPath(String.valueOf(id)).build();
+                    }
+                    c.close();
+                }
+            } catch (Exception ignore) {}
+            if (u != null) {
+                try {
+                    os = getContentResolver().openOutputStream(u, "wa");
+                } catch (Exception e) { os = null; }
+            }
+            if (os == null) {
+                android.content.ContentValues cv = new android.content.ContentValues();
+                cv.put(android.provider.MediaStore.Downloads.DISPLAY_NAME, "pan_dl_log.txt");
+                cv.put(android.provider.MediaStore.Downloads.MIME_TYPE, "text/plain");
+                cv.put(android.provider.MediaStore.Downloads.RELATIVE_PATH,
+                    android.os.Environment.DIRECTORY_DOWNLOADS);
+                u = getContentResolver().insert(
+                    android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, cv);
+                if (u != null) os = getContentResolver().openOutputStream(u, "wa");
+            }
+            if (os != null) {
+                os.write(line.getBytes("UTF-8"));
+                os.close();
+            }
+        } catch (Exception ignore) {
+            try { if (os != null) os.close(); } catch (Exception ignore2) {}
+        }
+    }
+
+    // 从 MediaStore 条目查询物理绝对路径（_data），供"打开/安装"使用；查不到返回 null
+    private String queryMediaDataPath(MainActivity act, Uri itemUri) {
+        try {
+            Cursor c = act.getContentResolver().query(itemUri,
+                new String[]{ android.provider.MediaStore.MediaColumns.DATA }, null, null, null);
+            if (c != null) {
+                try {
+                    if (c.moveToFirst()) {
+                        int idx = c.getColumnIndex(android.provider.MediaStore.MediaColumns.DATA);
+                        if (idx >= 0) return c.getString(idx);
+                    }
+                } finally { c.close(); }
+            }
+            return null;
+        } catch (Exception e) {
+            Log.e("PAN", "queryMediaDataPath fail", e);
+            return null;
+        }
+    }
+
+    // 查询自研流式下载任务进度，返回 JSON 数组 [{id,name,total,done,status}]
+    public String streamingTasksJson() {
+        StringBuilder sb = new StringBuilder("[");
+        boolean first = true;
+        for (java.util.Map.Entry<Long, long[]> e : streamTasks.entrySet()) {
+            long[] st = e.getValue();
+            if (st == null) continue;
+            if (!first) sb.append(",");
+            first = false;
+            sb.append("{\"id\":").append(e.getKey());
+            sb.append(",\"name\":\"\"");
+            sb.append(",\"total\":").append(st[1]);
+            sb.append(",\"done\":").append(st[0]);
+            sb.append(",\"status\":").append(st[3]);
+            sb.append("}");
+        }
+        sb.append("]");
+        return sb.toString();
+    }
+
     // 查询本应用经 DownloadManager 发起的下载任务进度，返回 JSON 数组 [{id,name,total,done,status}]
     // status: 1=下载中 8=成功 16=失败, done/total 单位字节
     public String queryDownloadsJson() {
@@ -432,15 +781,134 @@ public class MainActivity extends Activity {
         return n != null && n.toLowerCase().endsWith(".apk");
     }
 
-    // 打开已下载到系统下载目录的文件：apk 直接唤醒系统安装程序，其它走系统"打开方式"
+    // 打开已下载文件：优先 App 私有下载目录（自研流式下载落盘处），其次系统公共 Download 目录（DownloadManager 落盘处）。
+    // apk 直接唤醒系统安装程序，其它走系统"打开方式"
     public void openDownloadedFile(String name) {
         try {
             String fname = sanitizeFileName(name);
-            String dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS).getAbsolutePath();
-            File f = new File(dir, fname);
-            if (!f.exists()) { toast("文件不存在：" + (fname == null ? "" : fname)); return; }
+            logDl("OPEN CALLED name=" + name + " fname=" + fname);
+            File f = null;
+            // -2) 最可靠：通过 MediaStore 前缀查询 Download 列表，找出文件名匹配（含 "(1)" 后缀）的
+            //     IS_PENDING=0 的条目，取最新一个的 content URI 与真实路径。
+            //     注意：必须用【去扩展名的 baseName】做 LIKE 前缀，否则带 "(1)" 后缀的文件（DisplayName 变成 xxx (1).apk）
+            //     无法被 "xxx.apk%" 匹配到，会误选同名的旧损坏文件（如 5344 字节 HTML 壳）。
+            //     即使 app 重启、内存 map 清空，也能定位到新下载的完整文件，避免误打开同名旧损坏文件。
+            String baseName = fname;
+            if (baseName != null) {
+                int idx = baseName.lastIndexOf('.');
+                if (idx > 0) baseName = baseName.substring(0, idx);
+            }
+            Uri bestMediaUri = null;
+            String bestMediaPath = null;
+            long bestSize = -1;
+            try {
+                android.database.Cursor c = getContentResolver().query(
+                    android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+                    new String[]{
+                        android.provider.MediaStore.MediaColumns._ID,
+                        android.provider.MediaStore.MediaColumns.DISPLAY_NAME,
+                        android.provider.MediaStore.MediaColumns.SIZE,
+                        android.provider.MediaStore.MediaColumns.DATA,
+                        android.provider.MediaStore.MediaColumns.IS_PENDING
+                    },
+                    android.provider.MediaStore.MediaColumns.DISPLAY_NAME + " LIKE ? ",
+                    new String[]{ baseName + "%" },
+                    android.provider.MediaStore.MediaColumns.DATE_MODIFIED + " DESC");
+                if (c != null) {
+                    while (c.moveToNext()) {
+                        long id = c.getLong(0);
+                        String dn = c.getString(1);
+                        long size = c.getLong(2);
+                        int pending = c.getInt(4);
+                        if (dn != null && dn.startsWith(baseName) && pending == 0 && size > 0) {
+                            bestMediaUri = android.content.ContentUris.withAppendedId(
+                                android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, id);
+                            bestMediaPath = c.getString(3);
+                            bestSize = size;
+                            break; // 取最新一条完整记录
+                        }
+                    }
+                    c.close();
+                }
+            } catch (Exception ignore) {}
+            logDl("OPEN bestMediaUri=" + (bestMediaUri != null ? bestMediaUri.toString() : "null")
+                + " size=" + bestSize + " path=" + bestMediaPath);
+            // -1) 优先用内存中保存的 MediaStore content URI（自研流式下载成功时保存，本进程内最准）
+            java.util.Map.Entry<Long, String> uriEntry = null;
+            try {
+                for (java.util.Map.Entry<Long, String> en : streamTaskUris.entrySet()) {
+                    String p = streamTaskFiles.get(en.getKey());
+                    if (p == null) continue;
+                    File sf = new File(p);
+                    String bn = sf.getName();
+                    if (sf.exists() && bn != null && bn.startsWith(fname)) { uriEntry = en; break; }
+                }
+            } catch (Exception ignore) {}
+            logDl("OPEN uriEntry=" + (uriEntry != null ? uriEntry.getValue() : "null"));
+            // 0) 按文件名匹配自研流式下载已落盘文件（MediaStore 可能自动加后缀，用 basename 前缀匹配）
+            try {
+                for (String p : streamTaskFiles.values()) {
+                    if (p == null) continue;
+                    File sf = new File(p);
+                    String bn = sf.getName();
+                    if (sf.exists() && bn != null && bn.startsWith(fname)) { f = sf; break; }
+                }
+            } catch (Exception ignore) {}
+            // 1) 系统公共 Download 目录：若已存在精确名文件，优先用 MediaStore 查到的完整文件（bestMediaPath），
+            //    否则用 fname 精确匹配（可能是旧 DownloadManager 下载，需要校验大小不误开损坏文件）
+            if (f == null && bestMediaPath != null) {
+                File bf = new File(bestMediaPath);
+                if (bf.exists()) f = bf;
+            }
+            if (f == null) {
+                try {
+                    File cd = new File(Environment.getExternalStoragePublicDirectory(
+                        Environment.DIRECTORY_DOWNLOADS).getAbsolutePath(), fname);
+                    if (cd.exists() && cd.length() > 0) f = cd;
+                } catch (Exception ignore) {}
+            }
+            // 2) App 私有外部下载目录
+            if (f == null) {
+                try {
+                    File pd = new File(getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS).getAbsolutePath(), fname);
+                    if (pd.exists() && pd.length() > 0) f = pd;
+                } catch (Exception ignore) {}
+            }
+            logDl("OPEN file=" + (f != null ? f.getAbsolutePath() : "null") + " exists=" + (f != null && f.exists()));
+            if (isApk(fname)) {
+                // apk：优选 MediaStore content URI（内存 uriEntry > MediaStore 前缀查询 bestMediaUri）唤醒系统包安装器
+                Uri apkUri = null;
+                if (uriEntry != null) apkUri = Uri.parse(uriEntry.getValue());
+                else if (bestMediaUri != null) apkUri = bestMediaUri;
+                if (apkUri != null) {
+                    try {
+                        logDl("OPEN apk via MediaStore uri=" + apkUri);
+                        Intent install = new Intent(Intent.ACTION_INSTALL_PACKAGE);
+                        install.setDataAndType(apkUri, "application/vnd.android.package-archive");
+                        install.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                        install.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                        install.setClipData(ClipData.newRawUri("", apkUri));
+                        startActivity(install);
+                        logDl("OPEN apk install launched via MediaStore uri");
+                        return;
+                    } catch (Exception e) {
+                        Log.w("PAN", "open apk via MediaStore uri fail, fallback to path: " + e, e);
+                        logDl("OPEN MediaStore uri EXCEPTION " + e);
+                    }
+                }
+                if (f == null || !f.exists()) {
+                    toast("文件不存在：" + (fname == null ? "" : fname));
+                    logDl("OPEN no file found, toast");
+                    return;
+                }
+            } else if (f == null || !f.exists()) {
+                toast("文件不存在：" + (fname == null ? "" : fname));
+                logDl("OPEN no file found (non-apk), toast");
+                return;
+            }
             String contentUri = "content://com.pan.mobile.pan/file?path=" + Uri.encode(f.getAbsolutePath());
             Uri cu = Uri.parse(contentUri);
+            logDl("OPEN via PanProvider uri=" + cu + " size=" + (f != null ? f.length() : 0));
             Log.d("PAN", "open file: " + f.getAbsolutePath());
             if (isApk(fname)) {
                 // apk：直接唤醒系统包安装器（不走 chooser，安装必然有软件包安装程序）
@@ -452,9 +920,11 @@ public class MainActivity extends Activity {
                     install.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
                     install.setClipData(ClipData.newRawUri("", cu));
                     startActivity(install);
+                    logDl("OPEN apk install launched via PanProvider");
                     return;
                 } catch (Exception e) {
                     Log.e("PAN", "install direct fail -> chooser: " + e, e);
+                    logDl("OPEN PanProvider install EXCEPTION " + e);
                 }
             }
             // 其它类型（含 apk 兜底）：系统推荐打开方式
@@ -894,6 +1364,18 @@ public class MainActivity extends Activity {
         public long download(final String url, final String filename) {
             // @JavascriptInterface 方法在 UI 线程调用，同步发起下载即可返回真实 id
             return act.downloadViaManager(url, filename);
+        }
+
+        // 自研流式下载（带认证头 + 严格字节校验），返回任务 id（>=900000000；失败 -1）
+        @JavascriptInterface
+        public long downloadStream(final String url, final String filename, final long expectedSize) {
+            return act.downloadStream(url, filename, expectedSize);
+        }
+
+        // 自研流式下载任务进度
+        @JavascriptInterface
+        public String streamingTasks() {
+            return act.streamingTasksJson();
         }
 
         @JavascriptInterface
