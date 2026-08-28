@@ -31,7 +31,7 @@ svg { display: block; }
   background: linear-gradient(160deg, #ffffff 0%, #eef3fb 100%);
 }
 .login-wrap { width: 86%; max-width: 360px; }
-.login-logo { font-size: 28px; font-weight: 700; text-align: center; letter-spacing: 1px; }
+.login-logo { font-size: 28px; font-weight: 700; text-align: center; letter-spacing: 1px; margin-bottom: 36px; }
 .login-logo span { color: #2B6DE8; }
 .login-sub { text-align: center; color: #9aa2b1; font-size: 12px; margin: 6px 0 28px; }
 .login-tabs {
