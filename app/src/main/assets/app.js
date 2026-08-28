@@ -371,13 +371,6 @@
   window.__onAppPause = function () {};
   // App 回前台钩子（由原生 onResume 调用）
   window.__onAppResume = function () {};
-  // 登录方式切换（仅账号密码登录，此函数保留以防 tab 被点击时兜底）
-  function switchLoginTab(tab) {
-    document.querySelectorAll('.login-tab').forEach(function (t) {
-      t.classList.toggle('active', t.getAttribute('data-logintab') === tab);
-    });
-    $('login-pwd-panel').classList.remove('hidden');
-  }
 
 
   // ---------- 会话恢复 ----------
@@ -1099,12 +1092,6 @@
     // 登录
     $('login-btn').addEventListener('click', doLogin);
     $('login-pass').addEventListener('keydown', function (e) { if (e.key === 'Enter') doLogin(); });
-    // 账号密码登录：tab 切换
-    document.querySelectorAll('.login-tab').forEach(function (t) {
-      t.addEventListener('click', function () {
-        switchLoginTab(t.getAttribute('data-logintab'));
-      });
-    });
     // 重命名
     $('rename-ok').addEventListener('click', doRename);
     // 自定义确认弹窗：点"确定"执行回调
