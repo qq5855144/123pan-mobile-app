@@ -1,4 +1,4 @@
-name: Build APK
+name: Build & Release APK
 
 on:
   push:
@@ -9,6 +9,8 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
@@ -26,20 +28,31 @@ jobs:
           yes | sdkmanager --licenses > /dev/null 2>&1 || true
           sdkmanager "platforms;android-34" "build-tools;34.0.0"
 
-      - name: Create debug keystore
+      # 计算版本号：tag 触发取 tag（去 v）；分支/手动触发用 dev-<run_number>
+      - name: Compute version & release tag
+        id: ver
         run: |
-          mkdir -p "$HOME/.android"
-          if [ ! -f "$HOME/.android/debug.keystore" ]; then
-            keytool -genkeypair -v -keystore "$HOME/.android/debug.keystore" \
-              -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 \
-              -storepass android -keypass android \
-              -dname "CN=Android Debug,O=Android,C=US"
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            TAG="${{ github.ref_name }}"
+            echo "version_name=${TAG#v}" >> "$GITHUB_OUTPUT"
+            echo "release_tag=$TAG" >> "$GITHUB_OUTPUT"
+          else
+            echo "version_name=dev-${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+            echo "release_tag=dev-${{ github.run_number }}" >> "$GITHUB_OUTPUT"
           fi
+          echo "version_code=$(( 1000 + ${{ github.run_number }} ))" >> "$GITHUB_OUTPUT"
 
-      - name: Build APK
+      # 构建（正式签名 pan.keystore，来自 Secrets，保证可覆盖安装）
+      - name: Build APK (signed)
         run: |
           chmod +x scripts/build.sh
-          ./scripts/build.sh
+          bash scripts/build.sh
+        env:
+          VERSION_CODE: ${{ steps.ver.outputs.version_code }}
+          VERSION_NAME: ${{ steps.ver.outputs.version_name }}
+          KEYSTORE_B64: ${{ secrets.KEYSTORE_B64 }}
+          ANDROID_KEYSTORE_PASS: ${{ secrets.KEYSTORE_PASS }}
+          ANDROID_KEYSTORE_ALIAS: ${{ secrets.KEYSTORE_ALIAS }}
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
@@ -47,3 +60,14 @@ jobs:
           name: 123pan-mobile-apk
           path: build/*.apk
           if-no-files-found: error
+
+      # 自动发布 Release（tag 触发 / 每次构建都会发布对应 Release）
+      - name: Publish Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ver.outputs.release_tag }}
+          files: build/*.apk
+          generate_release_notes: true
+          make_latest: 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
