@@ -37,9 +37,14 @@ rm -rf "$W" && mkdir -p "$W/gen" "$W/obj" "$W/apk"
 # 1) compile resources -> gateway.zip
 "$BT/aapt2" compile --dir "$MAIN/res" -o "$W/gateway.zip"
 
-# 2) link resources + manifest -> base.apk (含 assets), 生成 R.java, 覆盖版本号
-"$BT/aapt2" link -I "$ANDROID_JAR" --manifest "$MAIN/AndroidManifest.xml" \
-    --version-code "$VERSION_CODE" --version-name "$VERSION_NAME" \
+# 2) link resources + manifest -> base.apk (含 assets), 生成 R.java
+#    关键：manifest 已含 versionCode/versionName 时，某些 aapt2 会忽略 --version-code/--version-name
+#    因此用 sed 生成含本次版本号的临时 manifest 副本，link 用该副本，确保版本号正确注入
+sed -E "s/android:versionCode=\"[0-9]+\"/android:versionCode=\"$VERSION_CODE\"/; s/android:versionName=\"[^\"]*\"/android:versionName=\"$VERSION_NAME\"/" \
+    "$MAIN/AndroidManifest.xml" > "$W/AndroidManifest.xml"
+echo "=== injected manifest version ==="
+grep -E 'versionCode|versionName' "$W/AndroidManifest.xml"
+"$BT/aapt2" link -I "$ANDROID_JAR" --manifest "$W/AndroidManifest.xml" \
     -A "$MAIN/assets" -o "$W/base.apk" --java "$W/gen" --auto-add-overlay "$W/gateway.zip"
 
 # 3) compile java
