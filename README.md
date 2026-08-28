@@ -1,6 +1,6 @@
 # 123pan-mobile-app
 
-123云盘（123pan）移动端复刻应用 —— 基于 Android WebView 实现。
+123云盘（123pan）移动端应用—— 基于 Android WebView 实现。
 
 ## 功能特性
 
@@ -47,14 +47,3 @@ ANDROID_KEYSTORE_PASS=123456 \
 ANDROID_KEYSTORE_ALIAS=pan \
 ./scripts/build.sh
 ```
-
-## 版本历史
-
-| 版本 | 说明 |
-|------|------|
-| v2.2.0 | 分享配置面板胶囊 UI |
-| v2.3.0 | 直连分享方案（download_info 直链） |
-| v2.3.1 | 移除顶部标题栏图标 |
-| v2.3.2 | 修复清空回收站功能 |
-| v2.3.3 | 自定义确认弹窗 |
-| v2.3.4 | 自定义 App 图标 |
