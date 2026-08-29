@@ -70,8 +70,8 @@ svg { display: block; }
 }
 .tb-logo { width: 22px; height: 22px; color: #2B6DE8; margin-right: 8px; }
 #top-title { font-size: 17px; font-weight: 600; }
-#content { flex: 1; overflow-y: auto; padding: 10px 12px 96px; }
-.view { height: 100%; }
+#content { flex: 1; overflow-y: auto; padding: 10px 12px 150px; }
+.view { min-height: 100%; box-sizing: border-box; }
 
 /* ---------- 全局搜索栏 ---------- */
 #search-bar {
@@ -145,13 +145,21 @@ svg { display: block; }
 .panel-empty .panel-emoji { font-size: 42px; margin-bottom: 10px; }
 .panel-empty p { margin-top: 4px; }
 .panel-empty .panel-sub { font-size: 12px; color: #b6bcc7; margin-top: 4px; }
-
 /* ---------- 底部工具栏 ---------- */
 #file-toolbar {
   position: fixed; left: 0; right: 0; bottom: 56px; height: 58px; z-index: 20;
   display: flex; align-items: center; justify-content: space-evenly;
   background: rgba(255,255,255,.96); border-top: 1px solid #eef0f5; backdrop-filter: blur(6px);
+  transition: transform .22s ease, opacity .22s ease;
+  will-change: transform;
 }
+#file-toolbar.toolbar-hidden {
+  transform: translateY(110%);
+  opacity: 0;
+  pointer-events: none;
+}
+/* 隐藏工具栏：文件列表不在底部为其留白，列表滚动到底可停在 tabbar 上方 */
+
 .tool-btn {
   display: flex; flex-direction: column; align-items: center; gap: 4px;
   color: #4b5563; font-size: 12px; min-width: 64px;
@@ -183,16 +191,6 @@ svg { display: block; }
 #recycle-list { background: #fff; border-radius: 14px; border: 1px solid #eef0f5; overflow: hidden; }
 
 /* ---------- 我的页 ---------- */
-.mine-card {
-  display: flex; align-items: center; background: #fff; border-radius: 14px;
-  padding: 18px 16px; margin-bottom: 12px; border: 1px solid #eef0f5;
-}
-.mine-avatar {
-  width: 52px; height: 52px; border-radius: 50%; background: #2B6DE8; color: #fff;
-  display: flex; align-items: center; justify-content: center; font-size: 22px; margin-right: 14px;
-}
-.mine-name { font-size: 17px; font-weight: 600; }
-.mine-id { font-size: 13px; color: #9aa2b1; margin-top: 3px; }
 .mine-item {
   display: flex; align-items: center; justify-content: space-between;
   background: #fff; padding: 15px 16px; margin-bottom: 10px; border-radius: 12px;
@@ -205,6 +203,44 @@ svg { display: block; }
   width: 100%; height: 46px; border-radius: 12px; background: #fff; color: #e5484d;
   font-size: 15px; font-weight: 600; border: 1px solid #fde3e3; margin-top: 6px;
 }
+/* 我的页：区块标题 / 可点击项 / 箭头 / 多账号 */
+.mine-section-title {
+  font-size: 13px; color: #9aa2b1; font-weight: 600; padding: 14px 4px 8px;
+}
+.mine-item-btn { cursor: pointer; }
+.mine-item-btn:active { background: #f5f7fb; }
+.mine-arrow { font-size: 18px; color: #c3c8d1; transform: translateY(-1px); }
+/* 账号列表 */
+.acct-item {
+  display: flex; align-items: center; background: #fff; padding: 13px 16px;
+  margin-bottom: 10px; border-radius: 12px; border: 1px solid #eef0f5; cursor: pointer;
+}
+.acct-item:active { background: #f5f7fb; }
+.acct-avatar {
+  width: 40px; height: 40px; border-radius: 50%; background: #eaf1ff; color: #2B6DE8;
+  display: flex; align-items: center; justify-content: center; font-size: 17px; margin-right: 12px;
+  flex: 0 0 40px;
+}
+.acct-info { flex: 1; min-width: 0; }
+.acct-user { font-size: 15px; font-weight: 600; color: #1a1a1a; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.acct-meta { font-size: 12px; color: #9aa2b1; margin-top: 2px; }
+.acct-current {
+  flex: 0 0 auto; display: flex; align-items: center; gap: 2px; font-size: 12px;
+  color: #2B6DE8; font-weight: 600;
+}
+.acct-current .mi-icon { width: 15px; height: 15px; }
+.acct-more { color: #c3c8d1; font-size: 18px; padding: 4px; }
+/* 账号操作菜单 */
+.account-actions { margin-bottom: 18px; }
+.account-action-item {
+  display: flex; align-items: center; justify-content: space-between; padding: 16px 6px;
+  border-bottom: 1px solid #f2f4f8; font-size: 15px; color: #1a1a1a; cursor: pointer;
+}
+.account-action-item:last-child { border-bottom: none; }
+.account-action-item.danger { color: #e5484d; }
+.account-action-item .aa-tag { font-size: 12px; color: #2B6DE8; font-weight: 600; }
+.account-msg { color: #e5484d; font-size: 13px; text-align: center; margin: 10px 0 2px; min-height: 18px; }
+#view-mine { padding-bottom: 10px; }
 
 /* ---------- 操作浮层（九宫格） ---------- */
 .sheet { position: fixed; inset: 0; z-index: 100; }

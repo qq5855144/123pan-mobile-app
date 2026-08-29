@@ -352,6 +352,7 @@
           state.token = tok;
           state.user = u;
           bridge.saveSession(tok, u, p);
+          addAccount(u, tok, p);   // 多账号：登录后加入账号列表并设为当前
           toast('登录成功');
           enterMain();
         } else {
@@ -1027,15 +1028,11 @@
 
   // ---------- 我的页 ----------
   function loadMine() {
-    $('mine-name').textContent = state.user || '未登录';
-    $('mine-id').textContent = state.token ? '已登录' : '未登录';
-    $('mine-avatar').textContent = (state.user || '用').charAt(0);
+    renderAccountList();
     $('mine-version').textContent = bridge && bridge.getVersion ? bridge.getVersion() : '1.6.0';
     api('GET', API.userInfo, '', true, function (d) {
       if (d && d.data) {
         var u = d.data;
-        if (u.nickName) $('mine-name').textContent = u.nickName;
-        if (u.vipName) $('mine-id').textContent = u.vipName;
         var total = Number(u.usedSize || 0) + Number(u.freeSize || 0);
         if (total > 0) $('mine-quota-val').textContent =
           '已用 ' + fmtSize(u.usedSize) + ' / 共 ' + fmtSize(total);
@@ -1052,6 +1049,196 @@
     show($('page-login'));
     hide($('page-main'));
     toast('已退出登录');
+  }
+
+  // ---------- 多账号系统 ----------
+  var ACCT_KEY = 'pan_accounts';
+  var ACCT_CUR = 'pan_current_user';
+  function loadAccounts() {
+    try {
+      var arr = JSON.parse(localStorage.getItem(ACCT_KEY) || '[]');
+      return Array.isArray(arr) ? arr : [];
+    } catch (e) { return []; }
+  }
+  function saveAccounts(list) {
+    try { localStorage.setItem(ACCT_KEY, JSON.stringify(list)); } catch (e) {}
+  }
+  function currentAccountUser() {
+    try { return localStorage.getItem(ACCT_CUR) || ''; } catch (e) { return ''; }
+  }
+  function setCurrentAccountUser(u) {
+    try { localStorage.setItem(ACCT_CUR, u || ''); } catch (e) {}
+  }
+  // 登录成功后加入账号列表（去重），并设为当前账号
+  function addAccount(user, token, pass) {
+    if (!user) return;
+    var list = loadAccounts();
+    var exists = false;
+    list.forEach(function (a) {
+      if (a.user === user) { a.token = token; a.pass = pass || a.pass; exists = true; }
+    });
+    if (!exists) list.unshift({ user: user, token: token, pass: pass || '' });
+    saveAccounts(list);
+    setCurrentAccountUser(user);
+  }
+  // 切换账号：更新原生会话 + 前端状态，重新加载视图数据
+  function switchAccount(user) {
+    var list = loadAccounts();
+    var target = null;
+    list.forEach(function (a) { if (a.user === user) target = a; });
+    if (!target) { toast('账号不存在'); return; }
+    state.token = target.token || '';
+    state.user = target.user || '';
+    state.currentDir = 0;
+    state.breadcrumb = [];
+    if (bridge.saveSession) bridge.saveSession(state.token, state.user, target.pass || '');
+    setCurrentAccountUser(user);
+    // 清除文件列表已加载标记，强制刷新
+    var fl = $('file-list');
+    if (fl) delete fl.dataset.loaded;
+    toast('已切换到账号 ' + user);
+    switchView('files');
+  }
+  // 删除账号
+  function removeAccount(user) {
+    var list = loadAccounts().filter(function (a) { return a.user !== user; });
+    saveAccounts(list);
+    var cur = currentAccountUser();
+    if (cur === user) {
+      setCurrentAccountUser('');
+      if (list.length > 0) {
+        switchAccount(list[0].user);
+      } else {
+        if (bridge.clearSession) bridge.clearSession();
+        state.token = ''; state.user = '';
+        state.currentDir = 0; state.breadcrumb = [];
+        show($('page-login')); hide($('page-main'));
+        toast('账号已删除');
+      }
+    } else {
+      toast('账号已删除');
+    }
+    loadMine();
+  }
+  // 渲染"我的"页的账号列表
+  function renderAccountList() {
+    var box = $('account-list');
+    if (!box) return;
+    var list = loadAccounts();
+    // 兼容：列表为空但当前已登录（升级前场景），把当前账号纳入列表
+    if (list.length === 0 && state.token && state.user) {
+      list = [{ user: state.user, token: state.token, pass: '' }];
+      saveAccounts(list);
+      setCurrentAccountUser(state.user);
+    }
+    var cur = currentAccountUser();
+    if (list.length === 0) {
+      box.innerHTML = '<div class="panel-empty" style="padding:20px 10px"><p>暂无保存的账号</p></div>';
+      return;
+    }
+    var html = '';
+    list.forEach(function (a) {
+      var isCur = a.user === cur || (!cur && a.user === state.user);
+      var name = a.user || '';
+      var letter = (name.charAt(0) || '用').toUpperCase();
+      html += '<div class="acct-item" data-user="' + esc(name) + '">'
+        + '<div class="acct-avatar">' + esc(letter) + '</div>'
+        + '<div class="acct-info">'
+        + '<div class="acct-user">' + esc(name) + '</div>'
+        + '<div class="acct-meta">' + (isCur ? '当前账号' : '点击切换') + '</div>'
+        + '</div>'
+        + (isCur ? '<span class="acct-current"><span class="mi-icon" data-icon="check"></span>当前</span>'
+                  : '<span class="acct-more">›</span>')
+        + '</div>';
+    });
+    box.innerHTML = html;
+    if (cur === '' && list.length > 0) setCurrentAccountUser(list[0].user);
+    // 注入列表内动态图标
+    injectIcons(box);
+    // 绑定点击：打开账号操作菜单
+    box.querySelectorAll('.acct-item').forEach(function (item) {
+      item.addEventListener('click', function () {
+        openAccountAction(item.getAttribute('data-user'));
+      });
+    });
+    box.addEventListener('click', function (e) {
+      e.stopPropagation();
+    });
+  }
+  // 账号操作菜单：切换 / 删除
+  function openAccountAction(user) {
+    var title = $('account-action-title');
+    var body = $('account-actions-body');
+    var cur = currentAccountUser();
+    var isCur = user === cur || (!cur && user === state.user);
+    title.textContent = user;
+    var html = ''
+      + '<div class="account-action-item" data-act="switch">'
+      + (isCur ? '<span>切换到此账号</span><span class="aa-tag">当前</span>'
+               : '<span>切换到该账号</span><span class="aa-tag">›</span>')
+      + '</div>'
+      + '<div class="account-action-item danger" data-act="del">删除该账号</div>';
+    body.innerHTML = html;
+    body.querySelectorAll('.account-action-item').forEach(function (item) {
+      item.addEventListener('click', function () {
+        var act = item.getAttribute('data-act');
+        hide($('account-action'));
+        if (act === 'switch') { switchAccount(user); if (state.view === 'mine') loadMine(); }
+        else if (act === 'del') {
+          showConfirm('确认删除账号「' + user + '」？', function () {
+            removeAccount(user);
+          });
+        }
+      });
+    });
+    show($('account-action'));
+  }
+  // 添加账号：弹出添加账号弹窗并登录
+  function openAddAccount() {
+    $('account-user').value = '';
+    $('account-pass').value = '';
+    $('account-msg').textContent = '';
+    show($('account-modal'));
+  }
+  function submitAddAccount() {
+    var u = $('account-user').value.trim();
+    var p = $('account-pass').value;
+    if (!u || !p) { $('account-msg').textContent = '请输入账号和密码'; return; }
+    var btn = $('account-ok');
+    btn.disabled = true;
+    $('account-msg').textContent = '登录中...';
+    api('POST', API.signIn,
+      JSON.stringify({ type: 1, passport: u, password: p }),
+      false,
+      function (d) {
+        btn.disabled = false;
+        var tok = d && d.data ? (d.data.token || d.data.authorization || '') : '';
+        if (tok) {
+          if (tok.indexOf('Bearer ') === 0) tok = tok.slice(7);
+          state.token = tok;
+          state.user = u;
+          bridge.saveSession(tok, u, p);
+          addAccount(u, tok, p);
+          hide($('account-modal'));
+          var fl = $('file-list'); if (fl) delete fl.dataset.loaded;
+          enterMain();
+          toast('账号已添加：' + u);
+          loadMine();
+        } else {
+          $('account-msg').textContent = (d && d.message) ? d.message
+            : ('登录失败[' + (d && d.code != null ? d.code : '') + ']，请检查账号密码');
+        }
+      });
+  }
+  // 清除缓存
+  function clearCache() {
+    try {
+      localStorage.removeItem('pan_transfers');
+      state.transfers = state.transfers || [];
+      state.transfers.length = 0;
+      saveTransfers();
+      toast('已清除本地缓存');
+    } catch (e) { toast('清除失败'); }
   }
 
   // ---------- Android 返回键 ----------
@@ -1113,6 +1300,23 @@
       toast('已选择 ' + files.length + ' 个文件（' + names.join('、') + '…）\n原生上传通道待接入');
       this.value = '';
     });
+    // 滚动时隐藏/显示底部"上传/新建"工具栏，避免遮挡文件列表
+    var scrollEl = $('content');
+    (function () {
+      var lastScrollTop = scrollEl.scrollTop || 0;
+      scrollEl.addEventListener('scroll', function () {
+        var st = scrollEl.scrollTop || 0;
+        var tb = $('file-toolbar');
+        if (!tb) return;
+        if (st > lastScrollTop + 2) {
+          tb.classList.add('toolbar-hidden');   // 向下滚动：隐藏工具栏（不遮挡列表）
+        } else if (st < lastScrollTop - 2) {
+          tb.classList.remove('toolbar-hidden'); // 向上滚动：显示工具栏
+        }
+        lastScrollTop = st;
+        if (st <= 0) tb.classList.remove('toolbar-hidden'); // 回顶：确保显示
+      });
+    })();
     // 全盘搜索
     var searchInput = $('search-input');
     var searchClear = $('search-clear');
@@ -1151,6 +1355,16 @@
     if (clearRecycleBtn) clearRecycleBtn.addEventListener('click', recycleClearAll);
     // 退出
     $('logout-btn').addEventListener('click', doLogout);
+    // 多账号：添加账号入口 + 添加账号弹窗确认
+    var accountAdd = $('account-add');
+    if (accountAdd) accountAdd.addEventListener('click', openAddAccount);
+    var accountOk = $('account-ok');
+    if (accountOk) accountOk.addEventListener('click', submitAddAccount);
+    var accountPass = $('account-pass');
+    if (accountPass) accountPass.addEventListener('keydown', function (e) { if (e.key === 'Enter') submitAddAccount(); });
+    // 清除缓存
+    var clearCacheBtn = $('mine-clear-cache');
+    if (clearCacheBtn) clearCacheBtn.addEventListener('click', clearCache);
     // 关闭浮层/弹窗（data-close）
     document.querySelectorAll('[data-close]').forEach(function (el) {
       el.addEventListener('click', function () {

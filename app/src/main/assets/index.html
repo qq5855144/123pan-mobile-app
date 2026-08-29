@@ -85,16 +85,18 @@
 
       <!-- 我的视图 -->
       <section id="view-mine" class="view hidden">
-        <div class="mine-card">
-          <div class="mine-avatar" id="mine-avatar">用</div>
-          <div class="mine-info">
-            <div class="mine-name" id="mine-name">未登录</div>
-            <div class="mine-id" id="mine-id"></div>
-          </div>
+        <div class="mine-section-title">账号管理</div>
+        <div id="account-list"></div>
+        <div class="mine-item mine-item-btn" id="account-add">
+          <span class="mine-label"><span class="mi-icon" data-icon="user-plus"></span>添加账号</span><span class="mine-val mine-arrow">›</span>
         </div>
+
+        <div class="mine-section-title">通用</div>
         <div class="mine-item" id="mine-quota"><span class="mine-label"><span class="mi-icon" data-icon="hdd"></span>存储空间</span><span class="mine-val" id="mine-quota-val">-</span></div>
+        <div class="mine-item mine-item-btn" id="mine-clear-cache"><span class="mine-label"><span class="mi-icon" data-icon="broom"></span>清除缓存</span><span class="mine-val mine-arrow">›</span></div>
         <div class="mine-item"><span class="mine-label"><span class="mi-icon" data-icon="info"></span>应用版本</span><span class="mine-val" id="mine-version">-</span></div>
-        <button id="logout-btn" class="btn-danger">退出登录</button>
+
+        <button id="logout-btn" class="btn-danger">退出当前账号</button>
       </section>
     </main>
 
@@ -154,6 +156,37 @@
       <button class="btn-plain" data-close>取消</button>
       <button id="newfolder-ok" class="btn-primary">创建</button>
     </div>
+  </div>
+</div>
+
+<!-- 添加账号弹窗 -->
+<div id="account-modal" class="modal hidden">
+  <div class="modal-mask" data-close></div>
+  <div class="modal-panel">
+    <div class="modal-title">添加账号</div>
+    <div class="field">
+      <label>账号</label>
+      <input id="account-user" type="text" placeholder="手机号 / 邮箱" autocomplete="username">
+    </div>
+    <div class="field">
+      <label>密码</label>
+      <input id="account-pass" type="password" placeholder="请输入密码" autocomplete="current-password">
+    </div>
+    <div class="account-msg" id="account-msg"></div>
+    <div class="modal-btns">
+      <button class="btn-plain" data-close>取消</button>
+      <button id="account-ok" class="btn-primary">登录并添加</button>
+    </div>
+  </div>
+</div>
+
+<!-- 账号操作菜单（切换/删除） -->
+<div id="account-action" class="sheet hidden">
+  <div class="sheet-mask" data-close></div>
+  <div class="sheet-panel">
+    <div class="sheet-title" id="account-action-title">账号操作</div>
+    <div class="account-actions" id="account-actions-body"></div>
+    <div class="sheet-item cancel" data-close>取消</div>
   </div>
 </div>
 
@@ -236,6 +269,9 @@
   <symbol id="i-text" viewBox="0 0 24 24"><path d="M4 6V4h16v2M12 4v16M9 20h6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
   <symbol id="i-code" viewBox="0 0 24 24"><path d="M8 6l-6 6 6 6M16 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
   <symbol id="i-apk" viewBox="0 0 24 24"><path d="M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z" fill="none" stroke="currentColor" stroke-width="2"/><path d="M9 8h.01M15 8h.01M9 14h6a3 3 0 0 1-6 0z" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/></symbol>
+  <symbol id="i-user-plus" viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM19 8v6M22 11h-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  <symbol id="i-broom" viewBox="0 0 24 24"><path d="M19 3l-7 7M8 12l-5 9 9-5M13 8l3 3M14 7l3 3M15 6l3 3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
 </svg>
 
 <script src="app.js"></script>
