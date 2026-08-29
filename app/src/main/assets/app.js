@@ -66,6 +66,17 @@
     if (b < 1073741824) return (b / 1048576).toFixed(1) + ' MB';
     return (b / 1073741824).toFixed(2) + ' GB';
   }
+  // 从对象中按候选字段名顺序取第一个有效数值（转为非负整数，取不到返回 0）
+  function numOf(obj) {
+    for (var i = 1; i < arguments.length; i++) {
+      var v = obj && obj[arguments[i]];
+      if (v != null) {
+        var n = Number(v);
+        if (!isNaN(n) && n > 0) return n;
+      }
+    }
+    return 0;
+  }
   function iconFor(item) {
     if (item && (item.Type === 1 || item.Type === '1')) return 'folder';
     return iconForName(item && (item.FileName || item.fileName));
@@ -1029,13 +1040,29 @@
   // ---------- 我的页 ----------
   function loadMine() {
     renderAccountList();
+    updateCacheSize();
     $('mine-version').textContent = bridge && bridge.getVersion ? bridge.getVersion() : '1.6.0';
     api('GET', API.userInfo, '', true, function (d) {
-      if (d && d.data) {
-        var u = d.data;
-        var total = Number(u.usedSize || 0) + Number(u.freeSize || 0);
-        if (total > 0) $('mine-quota-val').textContent =
-          '已用 ' + fmtSize(u.usedSize) + ' / 共 ' + fmtSize(total);
+      if (d && (d.data || d.Data)) {
+        var u = d.data || d.Data;
+        // 兼容：部分响应的用户信息嵌套在 user 对象中
+        if (u.user && typeof u.user === 'object') u = u.user;
+        // 123pan /b/api/user/info 真实字段：SpaceUsed（已用）、SpacePermanent（永久空间）、SpaceTemp（临时空间）
+        var used = numOf(u, 'SpaceUsed', 'UsedSize', 'usedSize', 'space_used', 'used');
+        var permanent = numOf(u, 'SpacePermanent', 'TotalSize', 'totalSize', 'space_total', 'total');
+        var temp = numOf(u, 'SpaceTemp', 'freeSize', 'FreeSize', 'space_temp', 'free');
+        // 总额 = 永久空间 + 临时空间；备用取 used + free
+        var total = (permanent > 0 || temp > 0) ? (permanent + temp) : 0;
+        if (!(total > 0)) total = used + (temp > 0 ? temp : 0);
+        if (total > 0) {
+          var usedV = used > 0 ? used : Math.max(0, total - temp);
+          $('mine-quota-val').textContent =
+            '已用 ' + fmtSize(usedV) + ' / 共 ' + fmtSize(total);
+        } else {
+          $('mine-quota-val').textContent = '容量不可用';
+        }
+      } else {
+        $('mine-quota-val').textContent = '容量获取失败';
       }
     });
   }
@@ -1230,15 +1257,27 @@
         }
       });
   }
-  // 清除缓存
-  function clearCache() {
+  // 读取并显示应用缓存大小
+  function updateCacheSize() {
+    var el = $('mine-cache-size');
+    if (!el) return;
     try {
-      localStorage.removeItem('pan_transfers');
-      state.transfers = state.transfers || [];
-      state.transfers.length = 0;
-      saveTransfers();
-      toast('已清除本地缓存');
-    } catch (e) { toast('清除失败'); }
+      var sz = (bridge && bridge.getCacheSize) ? Number(bridge.getCacheSize() || 0) : 0;
+      el.textContent = fmtSize(sz);
+    } catch (e) { el.textContent = '0 B'; }
+  }
+  // 清除缓存：清本地存储记录 + 调用原生清除 WebView/应用缓存
+  function clearCache() {
+    try { localStorage.removeItem('pan_transfers'); } catch (e) {}
+    state.transfers = state.transfers || [];
+    state.transfers.length = 0;
+    try { saveTransfers(); } catch (e) {}
+    try { localStorage.removeItem('pan_download_cache'); } catch (e) {}
+    if (bridge && bridge.clearCache) {
+      try { bridge.clearCache(); } catch (e) {}
+    }
+    toast('缓存已清除');
+    setTimeout(updateCacheSize, 50);
   }
 
   // ---------- Android 返回键 ----------

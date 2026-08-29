@@ -1320,6 +1320,52 @@ public class MainActivity extends Activity {
         }
     }
 
+    // 计算应用缓存大小（cacheDir + filesDir），返回字节数
+    private long calcCacheSize() {
+        long total = 0;
+        try { total += dirSize(getCacheDir()); } catch (Exception ignored) {}
+        try { total += dirSize(getFilesDir()); } catch (Exception ignored) {}
+        return total;
+    }
+    private long dirSize(File dir) {
+        if (dir == null || !dir.exists()) return 0;
+        long sum = 0;
+        File[] fs = dir.listFiles();
+        if (fs != null) {
+            for (File f : fs) {
+                if (f.isDirectory()) sum += dirSize(f);
+                else sum += f.length();
+            }
+        }
+        return sum;
+    }
+    // 清除应用缓存：WebView 缓存 + 应用私有缓存目录 + Cookie
+    private void clearAppCache() {
+        handler.post(new Runnable() {
+            @Override public void run() {
+                try { if (webView != null) webView.clearCache(true); } catch (Exception ignored) {}
+                try { CookieManager.getInstance().removeAllCookies(null); } catch (Exception ignored) {}
+            }
+        });
+        try { deleteDir(new File(getCacheDir(), "http")); } catch (Exception ignored) {}
+        try { deleteChildren(getCacheDir()); } catch (Exception ignored) {}
+        try { deleteDir(new File(getFilesDir(), "cache")); } catch (Exception ignored) {}
+        try { deleteDir(new File(getFilesDir(), "app_webview")); } catch (Exception ignored) {}
+    }
+    private void deleteChildren(File dir) {
+        if (dir == null || !dir.exists()) return;
+        File[] fs = dir.listFiles();
+        if (fs != null) for (File f : fs) deleteDir(f);
+    }
+    private void deleteDir(File dir) {
+        if (dir == null || !dir.exists()) return;
+        if (dir.isDirectory()) {
+            File[] fs = dir.listFiles();
+            if (fs != null) for (File f : fs) deleteDir(f);
+        }
+        dir.delete();
+    }
+
     // ============ JS 桥 ============
     static class NativeBridge {
         private final MainActivity act;
@@ -1402,5 +1448,11 @@ public class MainActivity extends Activity {
                 }
             });
         }
+
+        @JavascriptInterface
+        public long getCacheSize() { return act.calcCacheSize(); }
+
+        @JavascriptInterface
+        public void clearCache() { act.clearAppCache(); }
     }
 }
