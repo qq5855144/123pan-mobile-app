@@ -6,6 +6,7 @@
   'use strict';
 
   var bridge = window.NativeBridge;
+  var _currentList = [];   // 当前文件列表项（多选 toggle 时按 FileId 精准刷新用）
   var state = {
     token: '',
     user: '',
@@ -24,7 +25,10 @@
     progTimer: null,          // 下载进度轮询定时器
     searching: false,         // 是否处于全局搜索态
     searchKeyword: '',        // 当前搜索关键词
-    searchTotal: 0            // 搜索命中总数
+    searchTotal: 0,           // 搜索命中总数
+    selectMode: false,        // 是否处于多选（整理）模式
+    selectedMap: {},          // 多选模式下选中的文件/文件夹 fileId -> item
+    pickerState: null         // 文件夹选择器状态 {dir, path:[{id,name}]}
   };
 
   var API = {
@@ -38,6 +42,7 @@
     mkdir: 'https://api.123pan.cn/a/api/file/upload_request',        // 新建文件夹（123pan 用 upload_request 创建文件夹）
     userInfo: 'https://api.123pan.cn/b/api/user/info',
     shareCreate: 'https://api.123pan.cn/a/api/share/create',          // 创建分享（123pan 原生分享）
+    move: 'https://api.123pan.cn/a/api/file/mod_pid',                // 移动文件/文件夹到指定目录
     signIn: 'https://login.123pan.com/b/api/user/sign_in',
     qrGenerate: 'https://login.123pan.com/api/user/qr-code/generate',
     qrResult: 'https://login.123pan.com/api/user/qr-code/result'
@@ -124,7 +129,8 @@
     code: '<path d="M8 6l-6 6 6 6M16 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
     apk: '<circle cx="5.5" cy="10.5" r="1.5" fill="currentColor" stroke="none"/><circle cx="18.5" cy="10.5" r="1.5" fill="currentColor" stroke="none"/><path d="M6.5 7h11a4 4 0 0 1 4 4v4.5a3 3 0 0 1-3 3H5.5a3 3 0 0 1-3-3V11a4 4 0 0 1 4-4z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M7.7 6V3.8M16.3 6V3.8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>',
     search: '<circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" stroke-width="2"/><path d="M21 21l-4.3-4.3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>',
-    'x-circle': '<circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="2"/><path d="M15 9l-6 6M9 9l6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>'
+    'x-circle': '<circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="2"/><path d="M15 9l-6 6M9 9l6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>',
+    'folder-move': '<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M8 13h6M11 10l-3 3 3 3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>'
   };
   function applySvg(el, name) {
     var inner = ICON_SVG[name];
@@ -176,6 +182,14 @@
       if (sec) sec.classList.toggle('hidden', k !== v);
       if (tab) tab.classList.toggle('active', k === v);
     });
+    // 离开文件视图时退出多选（整理）模式，避免状态残留
+    if (v !== 'files' && state.selectMode) {
+      state.selectMode = false;
+      state.selectedMap = {};
+      hide($('select-toolbar'));
+      var ft = $('file-toolbar');
+      if (ft && ft.classList.contains('hidden')) show(ft);
+    }
     if (v === 'mine') loadMine();
     if (v === 'recycle') loadRecycle();
     if (v === 'transfers') { renderTransfers(); startProgressPolling(); }
@@ -441,15 +455,27 @@
 
   function renderList(list, total) {
     var box = $('file-list');
+    _currentList = list || [];
     box.innerHTML = '';
     if (!list || !list.length) {
       box.innerHTML = '<div class="panel-empty"><div class="panel-icon" data-icon="folder"></div><p>此目录为空</p></div>';
       injectIcons(box);
       return;
     }
+    var isSelect = state.selectMode;
+    var ckIcon = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6L9 17l-5-5" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg>';
     list.forEach(function (item) {
+      var isSel = !!state.selectedMap[item.FileId];
       var card = document.createElement('div');
-      card.className = 'file-card';
+      card.className = 'file-card' + (isSel ? ' selected' : '');
+      card.setAttribute('data-fid', item.FileId);
+      // 多选模式：卡片左侧显示复选框
+      if (isSelect) {
+        var ck = document.createElement('div');
+        ck.className = 'file-check' + (isSel ? ' checked' : '');
+        if (isSel) ck.innerHTML = ckIcon;
+        card.appendChild(ck);
+      }
       // 图标区（40px 圆角色块，按类型着色更形象）
       var iconWrap = document.createElement('div');
       iconWrap.className = 'file-icon-wrap fi-' + iconFor(item);
@@ -462,11 +488,172 @@
       body.appendChild(name); body.appendChild(meta);
       // 快捷方式按钮已移除：文件/文件夹的下载、删除等操作统一点击卡片后经操作浮层执行
       card.appendChild(iconWrap); card.appendChild(body);
-      // 事件：文件/文件夹统一点击弹出操作浮层（文件夹浮层含"打开"入口）
+      // 事件：多选模式下点击切换选中态，否则弹出操作浮层（文件夹浮层含"打开"入口）
       card.addEventListener('click', function (e) {
-        openActionSheet(item);
+        if (state.selectMode) {
+          toggleSelect(item);
+        } else {
+          openActionSheet(item);
+        }
       });
       box.appendChild(card);
+    });
+    // 更新多选操作栏的选中计数
+    if (isSelect) refreshSelectBar();
+  }
+
+  // ---------- 多选（文件整理） ----------
+  function enterSelectMode() {
+    state.selectMode = true;
+    state.selectedMap = {};
+    show($('select-toolbar'));
+    hide($('file-toolbar'));
+    loadList();
+  }
+  function exitSelectMode() {
+    state.selectMode = false;
+    state.selectedMap = {};
+    hide($('select-toolbar'));
+    var ft = $('file-toolbar');
+    if (ft) {
+      ft.classList.remove('toolbar-hidden');  // 确保回归正常工具栏可见
+      show(ft);
+    }
+    loadList();
+  }
+  function toggleSelect(item) {
+    var id = item.FileId;
+    if (state.selectedMap[id]) delete state.selectedMap[id];
+    else state.selectedMap[id] = item;
+    refreshSelectBar();
+    // 按 data-fid 精准定位并刷新对应卡片（不重渲整表，保留选中动画）
+    var box = $('file-list');
+    var cards = box.querySelectorAll('.file-card');
+    for (var i = 0; i < cards.length; i++) {
+      if (Number(cards[i].getAttribute('data-fid')) !== Number(id)) continue;
+      var sel = !!state.selectedMap[id];
+      cards[i].classList.toggle('selected', sel);
+      var ck = cards[i].querySelector('.file-check');
+      if (ck) {
+        ck.classList.toggle('checked', sel);
+        ck.innerHTML = sel ? '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6L9 17l-5-5" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg>' : '';
+      }
+    }
+  }
+  function refreshSelectBar() {
+    var n = Object.keys(state.selectedMap).length;
+    var cnt = $('select-count');
+    if (cnt) cnt.textContent = '已选 ' + n + ' 项';
+    var mv = $('select-move');
+    if (mv) mv.classList.toggle('disabled', n === 0);
+  }
+
+  // ---------- 文件夹选择器（移动目标） ----------
+  // 打开移动选择面板：从根目录开始浏览目录以选择目标文件夹
+  function openMovePicker() {
+    if (Object.keys(state.selectedMap).length === 0) { toast('请先选择要移动的文件'); return; }
+    var selItems = [];
+    for (var k in state.selectedMap) selItems.push(state.selectedMap[k]);
+    state.pickerState = { dir: 0, path: [] };   // 从根目录开始
+    show($('move-picker'));
+    loadPickerDir(0, []);
+  }
+  function closeMovePicker() {
+    hide($('move-picker'));
+    state.pickerState = null;
+  }
+  // 加载选择器指定目录下的子文件夹（供选择移动目标）
+  function loadPickerDir(pid, path) {
+    state.pickerState = state.pickerState || { dir: 0, path: [] };
+    state.pickerState.dir = pid;
+    state.pickerState.path = path || [];
+    // 渲染面包屑
+    var bc = $('picker-crumb');
+    bc.innerHTML = '';
+    var root = document.createElement('span');
+    root.className = 'pcrumb' + (pid === 0 ? ' active' : '');
+    root.textContent = '全部文件';
+    root.addEventListener('click', function () {
+      if (state.pickerState.dir !== 0) loadPickerDir(0, []);
+    });
+    bc.appendChild(root);
+    (path || []).forEach(function (c, i) {
+      var sep = document.createElement('span'); sep.className = 'psep'; sep.textContent = '›';
+      var cr = document.createElement('span');
+      cr.className = 'pcrumb' + (i === path.length - 1 ? ' active' : '');
+      cr.textContent = c.name;
+      cr.addEventListener('click', function () {
+        if (i < (path || []).length - 1) loadPickerDir(c.id, (path || []).slice(0, i + 1));
+      });
+      bc.appendChild(sep); bc.appendChild(cr);
+    });
+    var listEl = $('picker-list');
+    listEl.innerHTML = '<div class="loading-dot">加载中...</div>';
+    // 复用列表接口：仅取文件夹（Type===1）作为移动目标候选
+    var params = 'driveId=0&limit=200&next=0&orderBy=file_id&orderDirection=desc'
+      + '&parentFileId=' + pid + '&trashed=false&Page=1&OnlyLookAbnormalFile=0';
+    api('GET', API.list + '?' + params, '', true, function (d) {
+      var list = (d && d.data && d.data.InfoList) ? d.data.InfoList : [];
+      var dirs = list.filter(function (x) { return x.Type === 1; });
+      listEl.innerHTML = '';
+      if (!dirs.length) {
+        listEl.innerHTML = '<div class="p-empty">此目录下没有可选择的子文件夹</div>';
+        return;
+      }
+      dirs.forEach(function (dir) {
+        var row = document.createElement('div');
+        row.className = 'pdir-row';
+        // 图标
+        var ic = document.createElement('div');
+        ic.className = 'pdir-icon';
+        ic.appendChild(makeIcon('folder', ''));
+        row.appendChild(ic);
+        var nm = document.createElement('div');
+        nm.className = 'pdir-name'; nm.textContent = dir.FileName || '未命名';
+        row.appendChild(nm);
+        var badge = document.createElement('div');
+        badge.className = 'pdir-badge';
+        badge.textContent = '进入';
+        row.appendChild(badge);
+        row.addEventListener('click', function () {
+          loadPickerDir(dir.FileId, (state.pickerState.path || []).concat([{ id: pid, name: dir.FileName }]));
+        });
+        listEl.appendChild(row);
+      });
+    });
+  }
+  // 确认：把选中的文件移动到当前选择器停留的目录
+  function confirmMove() {
+    var p = state.pickerState;
+    if (!p) return;
+    var targetId = Number(p.dir) || 0;
+    // 拦截：目标不能是任一选中文件夹自身或其子目录
+    var paths = p.path || [];
+    for (var k in state.selectedMap) {
+      var it = state.selectedMap[k];
+      var itId = Number(it.FileId);
+      if (it.Type === 1 && itId === targetId) {
+        toast('不能移动到自身所在文件夹'); return;
+      }
+      // 检查 target 是否为选中的文件夹子目录（当前选择路径中已包含该文件夹）
+      var inSel = paths.some(function (c) { return Number(c.id) === itId; });
+      if (it.Type === 1 && inSel) {
+        toast('不能移动到所选文件夹的子目录'); return;
+      }
+    }
+    // 移动请求体：根据 123pan 协议推测 {driveId, parentFileId 目标, dragFileIdList 数组}
+    var ids = [];
+    for (var kk in state.selectedMap) ids.push(Number(state.selectedMap[kk].FileId));
+    var body = { driveId: 0, parentFileId: targetId, dragFileIdList: ids };
+    api('POST', API.move, JSON.stringify(body), true, function (d) {
+      if (d && d.code === 0) {
+        closeMovePicker();
+        exitSelectMode();
+        toast('已移动 ' + ids.length + ' 项');
+        loadList();
+      } else {
+        toast((d && d.message) || '移动失败');
+      }
     });
   }
 
@@ -1284,11 +1471,14 @@
   window.__handleBack = function () {
     // 优先关闭弹出的浮层/弹窗
     if (!$('confirm-modal').classList.contains('hidden')) { hide($('confirm-modal')); state.confirmOk = null; return true; }
+    if (!$('move-picker').classList.contains('hidden')) { hide($('move-picker')); state.pickerState = null; return true; }
     if (!$('share-config-modal').classList.contains('hidden')) { hide($('share-config-modal')); return true; }
     if (!$('newfolder-modal').classList.contains('hidden')) { hide($('newfolder-modal')); return true; }
     if (!$('share-modal').classList.contains('hidden')) { hide($('share-modal')); return true; }
     if (!$('rename-modal').classList.contains('hidden')) { hide($('rename-modal')); return true; }
     if (!$('action-sheet').classList.contains('hidden')) { hide($('action-sheet')); return true; }
+    // 多选（整理）模式：返回先退出多选
+    if (state.selectMode) { exitSelectMode(); return true; }
     // 再回退文件目录
     if (state.view === 'files' && state.currentDir !== 0) {
       var last = state.breadcrumb.pop() || { id: 0 };
@@ -1339,6 +1529,15 @@
       toast('已选择 ' + files.length + ' 个文件（' + names.join('、') + '…）\n原生上传通道待接入');
       this.value = '';
     });
+    // 整理（多选）：进入多选模式
+    var toolOrganize = $('tool-organize');
+    if (toolOrganize) toolOrganize.addEventListener('click', enterSelectMode);
+    // 多选操作栏：取消 / 移动
+    $('select-cancel').addEventListener('click', exitSelectMode);
+    $('select-move').addEventListener('click', openMovePicker);
+    // 移动文件夹选择器：取消 / 确定移动
+    $('picker-cancel').addEventListener('click', closeMovePicker);
+    $('picker-confirm').addEventListener('click', confirmMove);
     // 滚动时隐藏/显示底部"上传/新建"工具栏，避免遮挡文件列表
     var scrollEl = $('content');
     (function () {

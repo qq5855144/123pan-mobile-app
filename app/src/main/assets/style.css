@@ -376,3 +376,53 @@ svg { display: block; }
   background: #f5f7fb; transition: color .2s, background .2s;
 }
 .transfer-del:active { background: #fdecec; color: #e5484d; }
+
+/* ---------- 多选（整理）模式 ---------- */
+.file-check {
+  width: 20px; height: 20px; flex: 0 0 20px; border-radius: 50%; margin-right: 10px;
+  border: 2px solid #cfd5df; background: #fff; display: flex; align-items: center; justify-content: center;
+  color: #fff; transition: all .15s ease;
+}
+.file-check.checked { background: #2B6DE8; border-color: #2B6DE8; }
+.file-check svg { width: 12px; height: 12px; }
+.file-card.selected { background: #f2f6ff; }
+
+/* 多选底部操作栏 */
+#select-toolbar {
+  position: fixed; left: 0; right: 0; bottom: 56px; height: 58px; z-index: 20;
+  display: flex; align-items: center; padding: 0 16px; gap: 10px;
+  background: rgba(255,255,255,.97); border-top: 1px solid #eef0f5; backdrop-filter: blur(6px);
+}
+#select-count { flex: 1; font-size: 14px; color: #4b5563; font-weight: 500; }
+.st-btn {
+  height: 36px; padding: 0 18px; border-radius: 18px; font-size: 14px; border: 1px solid #e6e8ee;
+  background: #fff; color: #4b5563;
+}
+.st-btn.primary { background: #2B6DE8; border-color: #2B6DE8; color: #fff; }
+.st-btn.primary.disabled { background: #c5d4f5; border-color: #c5d4f5; color: #fff; }
+
+/* 移动文件夹选择器 */
+.move-panel { max-height: 70vh; display: flex; flex-direction: column; }
+.picker-crumb {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 4px; padding: 8px 0;
+  font-size: 13px; color: #2B6DE8;
+}
+.pcrumb { color: #2B6DE8; }
+.pcrumb.active { color: #4b5563; font-weight: 600; }
+.psep { color: #b0b6c2; }
+.move-tip { font-size: 12px; color: #9aa2b1; margin-bottom: 6px; }
+.picker-list { flex: 1; min-height: 140px; max-height: 40vh; overflow-y: auto; }
+.pdir-row {
+  display: flex; align-items: center; padding: 11px 10px; border-radius: 12px;
+  cursor: pointer; transition: background .15s;
+}
+.pdir-row:active { background: #f2f6ff; }
+.pdir-icon {
+  width: 36px; height: 36px; flex: 0 0 36px; border-radius: 9px; display: flex;
+  align-items: center; justify-content: center; margin-right: 10px;
+  background: #fdf1df; color: #f5a623;
+}
+.pdir-icon svg { width: 20px; height: 20px; }
+.pdir-name { flex: 1; font-size: 15px; color: #1a1a1a; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pdir-badge { font-size: 12px; color: #9aa2b1; margin-left: 8px; }
+.p-empty { padding: 30px; text-align: center; color: #9aa2b1; font-size: 13px; }

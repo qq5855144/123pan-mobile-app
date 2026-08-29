@@ -47,8 +47,12 @@
         </div>
         <div id="breadcrumb"></div>
         <div id="file-list"></div>
-        <!-- 底部工具栏：上传 / 新建 -->
+        <!-- 底部工具栏：整理 / 上传 / 新建 -->
         <div id="file-toolbar">
+          <div class="tool-btn" id="tool-organize" data-tool="organize">
+            <span class="tool-icon" data-icon="folder-move"></span><span>整理</span>
+          </div>
+          <div class="tool-sep"></div>
           <div class="tool-btn" id="tool-upload" data-tool="upload">
             <span class="tool-icon" data-icon="upload"></span><span>上传</span>
           </div>
@@ -56,6 +60,12 @@
           <div class="tool-btn" id="tool-newfolder" data-tool="newfolder">
             <span class="tool-icon" data-icon="folder-plus"></span><span>新建</span>
           </div>
+        </div>
+        <!-- 多选（整理）操作栏 -->
+        <div id="select-toolbar" class="hidden">
+          <span id="select-count">已选 0 项</span>
+          <button id="select-cancel" class="st-btn">取消</button>
+          <button id="select-move" class="st-btn primary disabled">移动</button>
         </div>
       </section>
 
@@ -245,6 +255,21 @@
 
 <!-- 上传文件隐藏输入 -->
 <input type="file" id="upload-input" hidden multiple>
+
+<!-- 移动文件（文件夹选择器） -->
+<div id="move-picker" class="modal hidden">
+  <div class="modal-mask" data-close></div>
+  <div class="modal-panel move-panel">
+    <div class="modal-title">移动文件</div>
+    <div class="picker-crumb" id="picker-crumb"></div>
+    <div class="move-tip">选择要把文件移动到的文件夹（点击"确定移动"移入当前目录）</div>
+    <div class="picker-list" id="picker-list"></div>
+    <div class="modal-btns">
+      <button class="btn-plain" id="picker-cancel">取消</button>
+      <button class="btn-primary" id="picker-confirm">确定移动</button>
+    </div>
+  </div>
+</div>
 
 <!-- 隐藏的 SVG 图标定义 -->
 <svg xmlns="http://www.w3.org/2000/svg" style="display:none">
