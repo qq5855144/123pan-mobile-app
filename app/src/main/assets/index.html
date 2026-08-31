@@ -254,6 +254,17 @@
 <!-- 上传文件隐藏输入 -->
 <input type="file" id="upload-input" hidden multiple>
 
+<!-- 上传进度条浮层 -->
+<div id="upload-progress" class="hidden">
+  <div class="up-mask"></div>
+  <div class="up-panel">
+    <div class="up-title" id="up-title">上传中</div>
+    <div class="up-name" id="up-name"></div>
+    <div class="up-bar"><div class="up-bar-fill" id="up-bar-fill"></div></div>
+    <div class="up-pct" id="up-pct">0%</div>
+  </div>
+</div>
+
 <!-- 移动文件（文件夹选择器） -->
 <div id="move-picker" class="modal hidden">
   <div class="modal-mask" data-close></div>

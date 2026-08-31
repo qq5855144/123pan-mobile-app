@@ -1240,6 +1240,7 @@ public class MainActivity extends Activity {
 
                         // 2b) PUT 整个对象到预签名 URL（x-id=PutObject 整对象直传）
                         // 与官方 Web 一致：整对象一次性 PUT，request body 即文件全部字节。
+                        // 分块写入并逐块上报进度到前端（window[callback](done,total)），实现上传进度条。
                         HttpURLConnection put = (HttpURLConnection) new URL(putUrl).openConnection();
                         put.setConnectTimeout(30000);
                         put.setReadTimeout(120000);
@@ -1247,7 +1248,25 @@ public class MainActivity extends Activity {
                         put.setDoOutput(true);
                         put.setFixedLengthStreamingMode(all.length);
                         java.io.OutputStream pos = put.getOutputStream();
-                        pos.write(all);
+                        final long totalLen = all.length;
+                        final int upChunk = 262144; // 256KB，兼顾真实进度反馈与无谓回调开销
+                        int sent = 0;
+                        while (sent < totalLen) {
+                            int len = Math.min(upChunk, totalLen - sent);
+                            pos.write(all, sent, len);
+                            sent += len;
+                            final int fdone = sent;
+                            // 进度回调需在 UI 线程执行（操作 WebView）
+                            handler.post(new Runnable() {
+                                @Override public void run() {
+                                    if (webView != null && callback != null && !callback.isEmpty()) {
+                                        webView.evaluateJavascript(
+                                            "window['" + callback + "']&&window['" + callback + "']("
+                                            + fdone + "," + totalLen + ");", null);
+                                    }
+                                }
+                            });
+                        }
                         pos.flush();
                         pos.close();
                         int putCode = put.getResponseCode();

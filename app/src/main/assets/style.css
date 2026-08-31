@@ -489,3 +489,17 @@ svg { display: block; }
 .pdir-name { flex: 1; font-size: 15px; color: #1a1a1a; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pdir-badge { font-size: 12px; color: #9aa2b1; margin-left: 8px; }
 .p-empty { padding: 30px; text-align: center; color: #9aa2b1; font-size: 13px; }
+
+/* ---------- 上传进度条浮层 ---------- */
+#upload-progress { position: fixed; inset: 0; z-index: 200; display: flex; align-items: center; justify-content: center; }
+#upload-progress.hidden { display: none; }
+#upload-progress .up-mask { position: absolute; inset: 0; background: rgba(0,0,0,0.35); }
+#upload-progress .up-panel {
+  position: relative; width: 82%; max-width: 340px; background: #fff; border-radius: 16px;
+  padding: 20px 18px; box-shadow: 0 10px 30px rgba(0,0,0,0.18);
+}
+#upload-progress .up-title { font-size: 15px; font-weight: 600; color: #1a1a1a; margin-bottom: 4px; }
+#upload-progress .up-name { font-size: 12px; color: #6b7280; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-bottom: 12px; }
+#upload-progress .up-bar { height: 8px; background: #eef1f6; border-radius: 4px; overflow: hidden; }
+#upload-progress .up-bar-fill { height: 100%; width: 0%; background: linear-gradient(90deg, #4a8df0, #2B6DE8); border-radius: 4px; transition: width .25s ease; }
+#upload-progress .up-pct { font-size: 13px; font-weight: 600; color: #2B6DE8; margin-top: 8px; text-align: right; }

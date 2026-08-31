@@ -1217,15 +1217,45 @@
     var fname = String(path).split('/').pop() || ('file_' + Date.now());
     // 原生上传通道：由 NativeBridge.uploadFiles 读取本地文件并完成 123pan 上传
     if (bridge && bridge.uploadFiles) {
-      bridge.uploadFiles(path, state.currentDir, '_cb_up_' + Date.now() + '_' + Math.floor(Math.random()*1e6));
+      var cbName = '_cb_up_' + Date.now() + '_' + Math.floor(Math.random()*1e6);
+      // 原生在 PUT 阶段通过该回调名上报进度：window[cbName](done, total)
+      window[cbName] = function (done, total) {
+        showUploadProgress(fname, done, total);
+      };
+      // 初始显示进度浮层（准备中）
+      showUploadProgress(fname, 0, 0);
+      bridge.uploadFiles(path, state.currentDir, cbName);
       return;
     }
     // 兜底：仅提示（不应到达）
     toast('上传通道未就绪：' + fname);
   }
-
+  // ---------- 上传进度浮层 ----------
+  function showUploadProgress(name, done, total) {
+    var box = $('upload-progress');
+    if (!box) return;
+    if (Number(total) > 0) {
+      var pct = Math.min(100, Math.max(0, Math.round(Number(done) * 100 / Number(total))));
+      if ($('up-name')) $('up-name').textContent = name;
+      var fill = $('up-bar-fill');
+      if (fill) fill.style.width = pct + '%';
+      if ($('up-pct')) $('up-pct').textContent = pct + '%';
+    } else {
+      if ($('up-title')) $('up-title').textContent = '准备上传';
+      if ($('up-name')) $('up-name').textContent = name;
+    }
+    show(box);
+  }
+  function hideUploadProgress() {
+    var box = $('upload-progress');
+    if (!box) return;
+    hide(box);
+    var fill = $('up-bar-fill');
+    if (fill) fill.style.width = '0%';
+  }
   // 原生上传结果回调
   window.__onUploadDone = function (ok, msg) {
+    hideUploadProgress();
     if (ok) {
       toast(msg || '上传成功');
       if (state.view === 'files') loadList();
