@@ -1235,14 +1235,18 @@
     var box = $('upload-progress');
     if (!box) return;
     if (Number(total) > 0) {
+      // 进入实际上传（PUT）阶段：标题恢复为"上传中"，并更新进度条
+      if ($('up-title')) $('up-title').textContent = '上传中';
       var pct = Math.min(100, Math.max(0, Math.round(Number(done) * 100 / Number(total))));
       if ($('up-name')) $('up-name').textContent = name;
-      var fill = $('up-bar-fill');
-      if (fill) fill.style.width = pct + '%';
+      if ($('up-bar-fill')) $('up-bar-fill').style.width = pct + '%';
       if ($('up-pct')) $('up-pct').textContent = pct + '%';
     } else {
+      // 初始阶段（读文件/获取上传任务）：显示"准备上传"，进度条 0%
       if ($('up-title')) $('up-title').textContent = '准备上传';
       if ($('up-name')) $('up-name').textContent = name;
+      if ($('up-bar-fill')) $('up-bar-fill').style.width = '0%';
+      if ($('up-pct')) $('up-pct').textContent = '0%';
     }
     show(box);
   }
