@@ -1165,7 +1165,9 @@
   function doNewFolder() {
     var name = $('newfolder-input').value.trim();
     if (!name) { toast('请输入文件夹名称'); return; }
-    // 123pan 新建文件夹：POST /a/api/file/upload_request，type=1 表示文件夹，size=0
+    // 123pan 新建文件夹：POST /a/api/file/upload_request，type=1 表示文件夹，size=0。
+    // 参数参考官方前端源码：event=newCreateFolder（C.JK.NewCreateFolder）标识"新建文件夹"操作、
+    // operateType=2（C.I_.Move），缺失这两个字段会导致接口无法正确创建文件夹而失效。
     api('POST', API.mkdir,
       JSON.stringify({
         driveId: 0,
@@ -1175,7 +1177,9 @@
         size: 0,
         type: 1,
         duplicate: 1,
-        NotReuse: true
+        NotReuse: true,
+        event: 'newCreateFolder',
+        operateType: '2'
       }),
       true,
       function (d) {
