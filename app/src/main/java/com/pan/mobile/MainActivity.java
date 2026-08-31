@@ -190,9 +190,11 @@ public class MainActivity extends Activity {
                     // 无法顺畅把滑块从左拖到最右；横屏 CSS 视口 iw=715 > 360，轨道完整显示可顺畅拖动。
                     // 注意：绝不缩窄轨道宽度——阿里云滑块判定用绝对 moveX 像素对齐服务端 gapX，缩窄会缩短 moveX 可达范围导致
                     // 拖到最右也够不到缺口判定失败。故仅加文字提示，不改任何轨道CSS、不加自动横屏。
-                    // 注入位置：验证码登录模式插到"获取验证码"按钮下方；账号登录模式兜底插到登录卡片(_bottom/form/_root)底部，两种模式均可见。
+                    // 注入位置：插到登录按钮下方固定标语"验证即登录，未注册将自动创建账号"(P._autoTip)文字后面。
+                    // 该标语在账号登录/验证码登录两种模式下都存在(验证码模式下位于"获取验证码"按钮下方)，
+                    // 故此处注入两种模式统一且位于按钮正下方，符合"验证码登录界面获取验证码按钮下方"的显示预期。
                     view.evaluateJavascript(
-                        "function addLandTip(){try{if(document.getElementById('__panLandTip'))return;var els=document.querySelectorAll('button');var btn=null;for(var i=0;i<els.length;i++){if(els[i].textContent&&els[i].textContent.indexOf('获取验证码')!=-1){btn=els[i];break;}}var c=btn?btn.parentElement:(document.querySelector('._bottom')||document.querySelector('form')||document.querySelector('._root'));if(!c||c.nodeName==='BODY')return;var tip=document.createElement('div');tip.id='__panLandTip';tip.style.cssText='margin-top:7px;color:#ff6b00;font-size:11px;line-height:1.4;text-align:center;font-weight:bold;';tip.textContent='若验证码滑块超出屏幕无法顺畅拖动，请将手机横屏后操作';c.appendChild(tip);}catch(e){}}"
+                        "function addLandTip(){try{if(document.getElementById('__panLandTip'))return;var all=document.querySelectorAll('*');var p=null;for(var i=0;i<all.length;i++){var e=all[i];if(e.childNodes&&e.childNodes.length===1&&e.childNodes[0].nodeType===3&&(e.textContent||'').indexOf('自动创建账号')!=-1){p=e;break;}}if(!p)return;var tip=document.createElement('div');tip.id='__panLandTip';tip.style.cssText='margin-top:7px;color:#ff6b00;font-size:11px;line-height:1.4;text-align:center;font-weight:bold;';tip.textContent='若验证码滑块超出屏幕无法顺畅拖动，请将手机横屏后操作';p.parentNode.insertBefore(tip,p.nextSibling);}catch(e){}}"
                         + "addLandTip();setInterval(addLandTip,1500);",
                         null);
                     // 尝试捕获 sso-token，成功则回到本地 SPA
