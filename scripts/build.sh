@@ -77,17 +77,24 @@ PYEOF
 # 6) zipalign 4
 "$BT/zipalign" -f 4 "$W/apk/unaligned.apk" "$W/apk/aligned.apk"
 
-# 7) sign：优先 CI Secrets（KEYSTORE_B64），其次 ANDROID_KEYSTORE，最后 debug.keystore
+# 7) sign：必须使用正式 keystore（保证 Releases 签名稳定、可覆盖安装）。
+#    - CI：优先 Secrets 注入的 KEYSTORE_B64
+#    - 本地：ANDROID_KEYSTORE 指定正式 keystore（如 pan.keystore）
+#    未配置正式 keystore 时直接失败，绝不回退随机 debug.keystore（避免每次签名不同）。
 if [ -n "$KEYSTORE_B64" ]; then
     echo "=== sign with CI keystore (secrets) ==="
     echo "$KEYSTORE_B64" | base64 -d > "$W/ci.keystore"
     KS="$W/ci.keystore"
     KS_PASS="${ANDROID_KEYSTORE_PASS:-123456}"
     KS_ALIAS="${ANDROID_KEYSTORE_ALIAS:-pan}"
+elif [ -n "$ANDROID_KEYSTORE" ]; then
+    echo "=== sign with ANDROID_KEYSTORE: $ANDROID_KEYSTORE ==="
+    KS="$ANDROID_KEYSTORE"
+    KS_PASS="${ANDROID_KEYSTORE_PASS:-123456}"
+    KS_ALIAS="${ANDROID_KEYSTORE_ALIAS:-pan}"
 else
-    KS="${ANDROID_KEYSTORE:-$HOME/.android/debug.keystore}"
-    KS_PASS="${ANDROID_KEYSTORE_PASS:-android}"
-    KS_ALIAS="${ANDROID_KEYSTORE_ALIAS:-androiddebugkey}"
+    echo "ERROR: no signing keystore configured. Set KEYSTORE_B64 (CI Secrets) or ANDROID_KEYSTORE." >&2
+    exit 1
 fi
 "$BT/apksigner" sign --ks "$KS" \
     --ks-pass "pass:$KS_PASS" --key-pass "pass:$KS_PASS" --ks-key-alias "$KS_ALIAS" \
