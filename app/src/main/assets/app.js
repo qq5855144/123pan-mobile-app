@@ -39,7 +39,7 @@
     trashDelete: 'https://api.123pan.cn/a/api/file/delete', // 从回收站彻底删除单个
     download: 'https://api.123pan.cn/a/api/file/download_info',      // 文件
     batchDownload: 'https://api.123pan.cn/a/api/file/batch_download_info', // 文件夹
-    mkdir: 'https://api.123pan.cn/a/api/file/upload_request',        // 新建文件夹（123pan 用 upload_request 创建文件夹）
+    mkdir: 'https://api.123pan.cn/b/api/file/upload_request',        // 新建文件夹（123pan 用 upload_request 创建文件夹；注意必须是 /b/ 前缀，/a/ 下无此路由会 404）
     userInfo: 'https://api.123pan.cn/b/api/user/info',
     shareCreate: 'https://api.123pan.cn/a/api/share/create',          // 创建分享（123pan 原生分享）
     move: 'https://api.123pan.cn/b/api/file/mod_pid',                // 移动文件/文件夹到指定目录
@@ -1165,7 +1165,7 @@
   function doNewFolder() {
     var name = $('newfolder-input').value.trim();
     if (!name) { toast('请输入文件夹名称'); return; }
-    // 123pan 新建文件夹：POST /a/api/file/upload_request，type=1 表示文件夹，size=0。
+    // 123pan 新建文件夹：POST /b/api/file/upload_request（注意必须 /b/ 前缀，/a/ 下网关无此路由会 404），type=1 表示文件夹，size=0。
     // 参数参考官方前端源码：event=newCreateFolder（C.JK.NewCreateFolder）标识"新建文件夹"操作、
     // operateType=2（C.I_.Move），缺失这两个字段会导致接口无法正确创建文件夹而失效。
     api('POST', API.mkdir,
