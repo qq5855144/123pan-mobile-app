@@ -222,26 +222,39 @@ svg { display: block; }
 .mine-item-btn { cursor: pointer; }
 .mine-item-btn:active { background: #f5f7fb; }
 .mine-arrow { font-size: 18px; color: #c3c8d1; transform: translateY(-1px); }
-/* 账号列表 */
+/* 账号池（多账号）：横向滚动胶囊布局，账号再多也保持固定高度，不会把"我的"页纵向拉高 */
+#account-list {
+  display: flex; flex-direction: row; gap: 10px; align-items: stretch;
+  overflow-x: auto; -webkit-overflow-scrolling: touch; scrollbar-width: none;
+  padding: 2px 2px 8px; background: transparent;
+}
+#account-list::-webkit-scrollbar { display: none; height: 0; }
 .acct-item {
-  display: flex; align-items: center; background: #fff; padding: 13px 16px;
-  margin-bottom: 10px; border-radius: 12px; border: 1px solid #eef0f5; cursor: pointer;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  flex: 0 0 92px; height: 104px; gap: 6px; padding: 10px 6px;
+  background: #fff; border-radius: 14px; border: 1px solid #eef0f5; cursor: pointer;
+  position: relative;
 }
-.acct-item:active { background: #f5f7fb; }
+.acct-item.current { border-color: #2B6DE8; background: #f0f5ff; }
+.acct-item:active { background: #ecf2fe; }
 .acct-avatar {
-  width: 40px; height: 40px; border-radius: 50%; background: #eaf1ff; color: #2B6DE8;
-  display: flex; align-items: center; justify-content: center; font-size: 17px; margin-right: 12px;
-  flex: 0 0 40px;
+  width: 44px; height: 44px; border-radius: 50%; background: #eaf1ff; color: #2B6DE8;
+  display: flex; align-items: center; justify-content: center; font-size: 18px;
+  flex: 0 0 44px;
 }
-.acct-info { flex: 1; min-width: 0; }
-.acct-user { font-size: 15px; font-weight: 600; color: #1a1a1a; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.acct-meta { font-size: 12px; color: #9aa2b1; margin-top: 2px; }
+.acct-item.current .acct-avatar { background: #2B6DE8; color: #fff; }
+.acct-info { min-width: 0; display: flex; flex-direction: column; align-items: center; gap: 2px; }
+.acct-user {
+  font-size: 12px; font-weight: 600; color: #1a1a1a; max-width: 80px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.acct-meta { font-size: 10px; color: #9aa2b1; }
 .acct-current {
-  flex: 0 0 auto; display: flex; align-items: center; gap: 2px; font-size: 12px;
-  color: #2B6DE8; font-weight: 600;
+  display: inline-flex; align-items: center; gap: 2px; font-size: 10px;
+  color: #2B6DE8; font-weight: 600; padding: 2px 6px; border-radius: 8px; background: #e3edff;
 }
-.acct-current .mi-icon { width: 15px; height: 15px; }
-.acct-more { color: #c3c8d1; font-size: 18px; padding: 4px; }
+.acct-current .mi-icon { width: 12px; height: 12px; }
+.acct-more { display: none; }
 /* 账号操作菜单 */
 .account-actions { margin-bottom: 18px; }
 .account-action-item {

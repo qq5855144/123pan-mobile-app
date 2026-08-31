@@ -1376,14 +1376,15 @@
       var isCur = a.user === cur || (!cur && a.user === state.user);
       var name = a.user || '';
       var letter = (name.charAt(0) || '用').toUpperCase();
-      html += '<div class="acct-item" data-user="' + esc(name) + '">'
+      // 账号池：紧凑横向胶囊，每账号固定宽高，不会随账号数量纵向拉高"我的"页。
+      // 当前账号加 current 类高亮（蓝边+蓝头像+右下'当前'角标）；播放后点胶囊开操作菜单。
+      html += '<div class="acct-item' + (isCur ? ' current' : '') + '" data-user="' + esc(name) + '">'
         + '<div class="acct-avatar">' + esc(letter) + '</div>'
         + '<div class="acct-info">'
         + '<div class="acct-user">' + esc(name) + '</div>'
-        + '<div class="acct-meta">' + (isCur ? '当前账号' : '点击切换') + '</div>'
-        + '</div>'
         + (isCur ? '<span class="acct-current"><span class="mi-icon" data-icon="check"></span>当前</span>'
-                  : '<span class="acct-more">›</span>')
+                  : '<span class="acct-meta">点击</span>')
+        + '</div>'
         + '</div>';
     });
     box.innerHTML = html;
