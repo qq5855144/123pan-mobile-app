@@ -33,7 +33,7 @@ scripts/build.sh         # 构建脚本（aapt2 + javac + d8 + zipalign + apksig
   - `versionName` = tag 去掉 `v`（如 `1.7.888`）
   - `versionCode` = `1000 + patch`（如 v1.7.888 → 1888），随版本稳定递增
   - Release 产物文件名即 `123pan-mobile-1.7.888.apk`
-- `push` 到 `main` 分支 或 手动触发（Actions）→ 每次构建都**自动发布 dev 预发布（prerelease）到 Releases**，同时上传 **123pan-mobile-apk** artifact；dev 版本不标记 latest，避免覆盖正式版
+- `push` 到 `main` 分支 或 手动触发（Actions）→ 每次构建都**自动发布正式 Release 到 Releases**，同时上传 **123pan-mobile-apk** artifact；仅正式 tag(v*) 的 Release 标记为 latest，dev 版本不标记 latest，避免覆盖正式版
 
 > 提示：正式版版本号完全由 tag 决定，发布新版本请按语义化版本打递增 tag（如 `v1.7.889`）。
 
