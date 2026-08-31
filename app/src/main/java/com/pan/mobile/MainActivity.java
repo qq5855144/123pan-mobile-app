@@ -185,16 +185,16 @@ public class MainActivity extends Activity {
                             + bindJson(json(token)) + "," + bindJson(json(user)) + ");", null);
                     }
                 } else if (url != null && url.contains("123pan.cn")) {
-                    // 官方登录页：缩窄阿里云 noCaptcha 滑块轨道，避免轨道占满/超出视口宽度无法顺畅拖动
-                    // 根因：#aliyunCaptcha-sliding-wrapper 固定 360px 宽 > 视口347px，且 x=-6 左侧溢出。
-                    // 修复：#aliyunCaptcha-sliding-wrapper(+body) 缩窄到视口 86% 并水平居中。
-                    // 滑块为动态注入，用 MutationObserver + 持续轮询强制覆盖，防止被页面脚本重设。
+                    // 官方登录页：注入常驻文字提示，提醒用户若验证码滑块超出屏幕无法顺畅拖动请横屏操作。
+                    // 背景（真机实测）：阿里云滑块轨道固定 360 CSS px。竖屏 CSS 视口仅 347px(iw=347,dpr=3.5)，轨道物理上横贯整个屏幕
+                    // 无法顺畅把滑块从左拖到最右；横屏 CSS 视口 iw=715 > 360，轨道完整显示可顺畅拖动。
+                    // 注意：绝不缩窄轨道宽度——阿里云滑块判定用绝对 moveX 像素对齐服务端 gapX，缩窄会缩短 moveX 可达范围导致
+                    // 拖到最右也够不到缺口判定失败。故仅加文字提示，不改任何轨道CSS、不加自动横屏。
+                    // 注入位置：验证码登录模式插到"获取验证码"按钮下方；账号登录模式兜底插到登录卡片(_bottom/form/_root)底部，两种模式均可见。
                     view.evaluateJavascript(
-                        "function shrink(){try{var iw=(window.innerWidth||347);var w=document.getElementById('aliyunCaptcha-sliding-wrapper');if(w){var t=Math.round(iw*0.86);w.style.width=t+'px';w.style.margin='0 auto';w.style.transform='translateX(0)';w.style.left='auto';w.style.right='auto';var b=document.getElementById('aliyunCaptcha-sliding-body');if(b&&(b.getBoundingClientRect().width>t+2||b.getBoundingClientRect().x<0)){b.style.width='100%'}}}catch(e){}}"
-                        + "var mo=new MutationObserver(function(){shrink()});(function(){var r=(document.body||document.documentElement);if(r)mo.observe(r,{subtree:true,childList:true,attributes:true});})();setInterval(shrink,400);setTimeout(shrink,800);",
-                        new android.webkit.ValueCallback<String>() {
-                            @Override public void onReceiveValue(String v) { }
-                        });
+                        "function addLandTip(){try{if(document.getElementById('__panLandTip'))return;var els=document.querySelectorAll('button');var btn=null;for(var i=0;i<els.length;i++){if(els[i].textContent&&els[i].textContent.indexOf('获取验证码')!=-1){btn=els[i];break;}}var c=btn?btn.parentElement:(document.querySelector('._bottom')||document.querySelector('form')||document.querySelector('._root'));if(!c||c.nodeName==='BODY')return;var tip=document.createElement('div');tip.id='__panLandTip';tip.style.cssText='margin-top:7px;color:#ff6b00;font-size:11px;line-height:1.4;text-align:center;font-weight:bold;';tip.textContent='若验证码滑块超出屏幕无法顺畅拖动，请将手机横屏后操作';c.appendChild(tip);}catch(e){}}"
+                        + "addLandTip();setInterval(addLandTip,1500);",
+                        null);
                     // 尝试捕获 sso-token，成功则回到本地 SPA
                     tryCaptureSsoTokenFromMain();
                 }
