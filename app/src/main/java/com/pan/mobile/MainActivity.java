@@ -1248,7 +1248,7 @@ public class MainActivity extends Activity {
                         put.setDoOutput(true);
                         put.setFixedLengthStreamingMode(all.length);
                         java.io.OutputStream pos = put.getOutputStream();
-                        final long totalLen = all.length;
+                        final int totalLen = all.length; // byte[] 长度即 int，与 Math.min/setFixedLengthStreamingMode 保持一致，避免 long→int lossy
                         final int upChunk = 262144; // 256KB，兼顾真实进度反馈与无谓回调开销
                         int sent = 0;
                         while (sent < totalLen) {
