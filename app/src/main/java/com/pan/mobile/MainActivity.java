@@ -155,6 +155,24 @@ public class MainActivity extends Activity {
 
         webView.setWebViewClient(new WebViewClient() {
             @Override
+            public void onPageStarted(WebView view, String url, android.graphics.Bitmap favicon) {
+                super.onPageStarted(view, url, favicon);
+                // 官方登录页按设备宽度渲染（禁用 wide viewport，避免阿里云滑块/浮层比视口宽无法拖动）；
+                // 本地 SPA 保持移动端宽视口
+                if (url != null && url.contains("123pan.cn")) {
+                    WebSettings s = view.getSettings();
+                    s.setUseWideViewPort(false);
+                    s.setLoadWithOverviewMode(false);
+                    s.setSupportZoom(false);
+                } else if (url != null && url.startsWith("file://")) {
+                    WebSettings s = view.getSettings();
+                    s.setUseWideViewPort(true);
+                    s.setLoadWithOverviewMode(true);
+                    s.setSupportZoom(false);
+                }
+            }
+
+            @Override
             public void onPageFinished(WebView view, String url) {
                 super.onPageFinished(view, url);
                 if (url != null && url.startsWith("file://")) {
