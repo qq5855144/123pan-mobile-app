@@ -1504,6 +1504,23 @@ public class MainActivity extends Activity {
             act.prefs.edit().remove(KEY_TOKEN).remove(KEY_USER).remove(KEY_PASS).apply();
         }
 
+        // 退出当前账号：清除本地会话 + WebView 官方域 cookie（含 sso-token），并回到官方登录页
+        @JavascriptInterface
+        public void logout() {
+            act.prefs.edit().remove(KEY_TOKEN).remove(KEY_USER).remove(KEY_PASS).apply();
+            act.handler.post(() -> {
+                if (act.webView != null) {
+                    try {
+                        android.webkit.CookieManager cm = android.webkit.CookieManager.getInstance();
+                        cm.removeAllCookies(null);
+                        cm.flush();
+                    } catch (Exception ignored) {}
+                    act.officialLoginDone = false;
+                    act.webView.loadUrl(OFFICIAL_LOGIN_URL);
+                }
+            });
+        }
+
         // 重新打开官方登录页（前端兜底：登录页异常时再次进入官方登录）
         @JavascriptInterface
         public void openOfficialLogin() {

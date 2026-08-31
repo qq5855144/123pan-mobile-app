@@ -397,10 +397,13 @@
 
 
   // ---------- 会话恢复 ----------
+  // 登录成功后原生切回本地 SPA 并注入本函数恢复会话（此时记录账号到多账号列表）
   window.__restoreSession = function (token, user) {
     if (token) {
       state.token = token;
       state.user = user || '';
+      // 记录到多账号列表（去重），便于后续切换/展示
+      try { addAccount(state.user, state.token, ''); } catch (e) {}
       enterMain();
     }
   };
@@ -1253,14 +1256,21 @@
   }
 
   function doLogout() {
-    if (bridge.clearSession) bridge.clearSession();
-    state.token = '';
-    state.user = '';
-    state.currentDir = 0;
-    state.breadcrumb = [];
-    show($('page-login'));
-    hide($('page-main'));
-    toast('已退出登录');
+    showConfirm('确认退出当前账号？', function () {
+      // 官方登录页方案：退出 = 清除本地会话 + 清官方域 cookie（sso-token）+ 回到官方登录页
+      if (bridge && bridge.logout) {
+        try { localStorage.setItem(ACCT_CUR, ''); } catch (e) {}
+        bridge.logout();
+      } else {
+        // 兜底
+        if (bridge.clearSession) bridge.clearSession();
+        state.token = ''; state.user = '';
+        toast('已退出登录');
+        // 尝试回到官方登录页
+        if (bridge && bridge.openOfficialLogin) bridge.openOfficialLogin();
+        else { show($('page-login')); hide($('page-main')); }
+      }
+    });
   }
 
   // ---------- 多账号系统 ----------
@@ -1293,23 +1303,12 @@
     saveAccounts(list);
     setCurrentAccountUser(user);
   }
-  // 切换账号：更新原生会话 + 前端状态，重新加载视图数据
+  // 切换账号：统一走官方登录页重新登录（本地 token 无法用于官方 cookie 域，官方页认证最可靠）
   function switchAccount(user) {
-    var list = loadAccounts();
-    var target = null;
-    list.forEach(function (a) { if (a.user === user) target = a; });
-    if (!target) { toast('账号不存在'); return; }
-    state.token = target.token || '';
-    state.user = target.user || '';
-    state.currentDir = 0;
-    state.breadcrumb = [];
-    if (bridge.saveSession) bridge.saveSession(state.token, state.user, target.pass || '');
-    setCurrentAccountUser(user);
-    // 清除文件列表已加载标记，强制刷新
-    var fl = $('file-list');
-    if (fl) delete fl.dataset.loaded;
-    toast('已切换到账号 ' + user);
-    switchView('files');
+    if (user === state.user) { toast('已是当前账号'); return; }
+    toast('请在弹出的官方登录页中登录「' + user + '」账号');
+    try { localStorage.setItem(ACCT_CUR, ''); } catch (e) {}
+    openOfficialLogin();
   }
   // 删除账号
   function removeAccount(user) {
@@ -1318,13 +1317,13 @@
     var cur = currentAccountUser();
     if (cur === user) {
       setCurrentAccountUser('');
+      // 官方登录页方案：删除当前账号后走官方登录页重新登录/登录其他账号
       if (list.length > 0) {
-        switchAccount(list[0].user);
+        toast('已删除账号「' + user + '」，请在弹出的官方登录页中登录其他账号');
+        openOfficialLogin();
       } else {
-        if (bridge.clearSession) bridge.clearSession();
-        state.token = ''; state.user = '';
-        state.currentDir = 0; state.breadcrumb = [];
-        show($('page-login')); hide($('page-main'));
+        if (bridge && bridge.logout) bridge.logout();
+        else { if (bridge.clearSession) bridge.clearSession(); state.token = ''; state.user = ''; show($('page-login')); hide($('page-main')); }
         toast('账号已删除');
       }
     } else {
@@ -1405,42 +1404,16 @@
     });
     show($('account-action'));
   }
-  // 添加账号：弹出添加账号弹窗并登录
+  // 添加账号：统一走官方 123 云盘登录页（账号密码 / 手机验证码 + 滑块均官方处理）
   function openAddAccount() {
-    $('account-user').value = '';
-    $('account-pass').value = '';
-    $('account-msg').textContent = '';
-    show($('account-modal'));
+    toast('请在弹出的官方登录页中登录新账号');
+    openOfficialLogin();
   }
+  // 添加账号提交（兼容兜底）：统一走官方登录页（本地密码登录会被官方滑块拦截，不从 App 内发起）
   function submitAddAccount() {
-    var u = $('account-user').value.trim();
-    var p = $('account-pass').value;
-    if (!u || !p) { $('account-msg').textContent = '请输入账号和密码'; return; }
-    var btn = $('account-ok');
-    btn.disabled = true;
-    $('account-msg').textContent = '登录中...';
-    api('POST', API.signIn,
-      JSON.stringify({ type: 1, passport: u, password: p }),
-      false,
-      function (d) {
-        btn.disabled = false;
-        var tok = d && d.data ? (d.data.token || d.data.authorization || '') : '';
-        if (tok) {
-          if (tok.indexOf('Bearer ') === 0) tok = tok.slice(7);
-          state.token = tok;
-          state.user = u;
-          bridge.saveSession(tok, u, p);
-          addAccount(u, tok, p);
-          hide($('account-modal'));
-          var fl = $('file-list'); if (fl) delete fl.dataset.loaded;
-          enterMain();
-          toast('账号已添加：' + u);
-          loadMine();
-        } else {
-          $('account-msg').textContent = (d && d.message) ? d.message
-            : ('登录失败[' + (d && d.code != null ? d.code : '') + ']，请检查账号密码');
-        }
-      });
+    toast('请在弹出的官方登录页中完成登录');
+    try { hide($('account-modal')); } catch (e) {}
+    openOfficialLogin();
   }
   // 读取并显示应用缓存大小
   function updateCacheSize() {
@@ -1591,13 +1564,9 @@
     if (clearRecycleBtn) clearRecycleBtn.addEventListener('click', recycleClearAll);
     // 退出
     $('logout-btn').addEventListener('click', doLogout);
-    // 多账号：添加账号入口 + 添加账号弹窗确认
+    // 多账号：添加账号入口（统一走官方登录页）
     var accountAdd = $('account-add');
     if (accountAdd) accountAdd.addEventListener('click', openAddAccount);
-    var accountOk = $('account-ok');
-    if (accountOk) accountOk.addEventListener('click', submitAddAccount);
-    var accountPass = $('account-pass');
-    if (accountPass) accountPass.addEventListener('keydown', function (e) { if (e.key === 'Enter') submitAddAccount(); });
     // 清除缓存
     var clearCacheBtn = $('mine-clear-cache');
     if (clearCacheBtn) clearCacheBtn.addEventListener('click', clearCache);
