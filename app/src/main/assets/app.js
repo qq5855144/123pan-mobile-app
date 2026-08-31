@@ -1507,12 +1507,10 @@
   }
   // 添加账号：统一走官方 123 云盘登录页（账号密码 / 手机验证码 + 滑块均官方处理）
   function openAddAccount() {
-    toast('请在弹出的官方登录页中登录新账号');
     openOfficialLogin();
   }
   // 添加账号提交（兼容兜底）：统一走官方登录页（本地密码登录会被官方滑块拦截，不从 App 内发起）
   function submitAddAccount() {
-    toast('请在弹出的官方登录页中完成登录');
     try { hide($('account-modal')); } catch (e) {}
     openOfficialLogin();
   }
