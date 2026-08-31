@@ -185,7 +185,17 @@ public class MainActivity extends Activity {
                             + bindJson(json(token)) + "," + bindJson(json(user)) + ");", null);
                     }
                 } else if (url != null && url.contains("123pan.cn")) {
-                    // 官方登录页：尝试捕获 sso-token，成功则回到本地 SPA
+                    // 官方登录页：缩窄阿里云 noCaptcha 滑块轨道，避免轨道占满/超出视口宽度无法顺畅拖动
+                    // 根因：#aliyunCaptcha-sliding-wrapper 固定 360px 宽 > 视口347px，且 x=-6 左侧溢出。
+                    // 修复：#aliyunCaptcha-sliding-wrapper(+body) 缩窄到视口 86% 并水平居中。
+                    // 滑块为动态注入，用 MutationObserver + 持续轮询强制覆盖，防止被页面脚本重设。
+                    view.evaluateJavascript(
+                        "function shrink(){try{var iw=(window.innerWidth||347);var w=document.getElementById('aliyunCaptcha-sliding-wrapper');if(w){var t=Math.round(iw*0.86);w.style.width=t+'px';w.style.margin='0 auto';w.style.transform='translateX(0)';w.style.left='auto';w.style.right='auto';var b=document.getElementById('aliyunCaptcha-sliding-body');if(b&&(b.getBoundingClientRect().width>t+2||b.getBoundingClientRect().x<0)){b.style.width='100%'}}}catch(e){}}"
+                        + "var mo=new MutationObserver(function(){shrink()});(function(){var r=(document.body||document.documentElement);if(r)mo.observe(r,{subtree:true,childList:true,attributes:true});})();setInterval(shrink,400);setTimeout(shrink,800);",
+                        new android.webkit.ValueCallback<String>() {
+                            @Override public void onReceiveValue(String v) { }
+                        });
+                    // 尝试捕获 sso-token，成功则回到本地 SPA
                     tryCaptureSsoTokenFromMain();
                 }
             }
