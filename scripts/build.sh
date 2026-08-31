@@ -14,18 +14,18 @@ ANDROID_JAR="${ANDROID_PLATFORM_JAR:-$ANDROID_HOME/platforms/android-34/android.
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 MAIN="$ROOT/app/src/main"
 
-# ---- 版本号：优先环境变量；否则自动迭代 ----
+# ---- 版本号：优先环境变量；否则自动迭代（统一采用语义化版本 x.y.z 格式）----
+# versionCode 一律由 RUN_NUM 单调递增派生，保证任何版本覆盖安装都安全（永不回退）。
 RUN_NUM="${GITHUB_RUN_NUMBER:-1}"
 REF_TYPE="${GITHUB_REF_TYPE:-}"
-TAG_NAME="${GITHUB_REF_NAME:-v2.3.4}"
+TAG_NAME="${GITHUB_REF_NAME:-}"
+VC_default=$(( 1000 + RUN_NUM ))
 if [ "$REF_TYPE" = "tag" ]; then
-    # tag 触发：versionName 取 tag（去掉前导 v），versionCode 以 run 递增基数
+    # tag 触发：versionName = tag 去掉前导 v（例如 v1.0.5 → 1.0.5）
     VN_default="${TAG_NAME#v}"
-    VC_default=$(( 1000 + RUN_NUM ))
 else
-    # 分支/手动触发：dev 版本，run_number 递增
-    VN_default="dev-${RUN_NUM}"
-    VC_default=$(( 1000 + RUN_NUM ))
+    # 分支/手动触发：语义化版本 dev 号，PATCH 随 run 递增（例如 1.0.28）
+    VN_default="1.0.${RUN_NUM}"
 fi
 VERSION_CODE="${VERSION_CODE:-$VC_default}"
 VERSION_NAME="${VERSION_NAME:-$VN_default}"

@@ -28,19 +28,21 @@ jobs:
           yes | sdkmanager --licenses > /dev/null 2>&1 || true
           sdkmanager "platforms;android-34" "build-tools;34.0.0"
 
-      # 计算版本号：tag 触发取 tag（去 v）；分支/手动触发用 dev-<run_number>
+      # 计算版本号：统一采用语义化版本 x.y.z（versionName）。
+      #   versionCode 一律由 run_number 单调递增派生（1000+run），保证任何版本覆盖安装都安全（永不回退）。
+      #   tag 触发：versionName= tag 去 v（如 v1.0.0→1.0.0）；非 tag 触发：versionName=1.0.<run_number>
+      #   release_tag（git tag 名）：tag 触发用 tag 名；非 tag 触发用 dev-<run_number>（仅作为 release 标识）。
       - name: Compute version & release tag
         id: ver
         run: |
           if [ "${{ github.ref_type }}" = "tag" ]; then
-            TAG="${{ github.ref_name }}"          # 例如 v1.7.888
-            VN="${TAG#v}"                          # 1.7.888
-            PATCH="${VN##*.}"                      # 888
+            TAG="${{ github.ref_name }}"          # 例如 v1.0.0
+            VN="${TAG#v}"                          # 1.0.0
             echo "version_name=$VN" >> "$GITHUB_OUTPUT"
             echo "release_tag=$TAG" >> "$GITHUB_OUTPUT"
-            echo "version_code=$(( 1000 + 10#$PATCH ))" >> "$GITHUB_OUTPUT"
+            echo "version_code=$(( 1000 + ${{ github.run_number }} ))" >> "$GITHUB_OUTPUT"
           else
-            echo "version_name=dev-${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+            echo "version_name=1.0.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
             echo "release_tag=dev-${{ github.run_number }}" >> "$GITHUB_OUTPUT"
             echo "version_code=$(( 1000 + ${{ github.run_number }} ))" >> "$GITHUB_OUTPUT"
           fi

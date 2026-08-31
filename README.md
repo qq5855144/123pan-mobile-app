@@ -28,7 +28,7 @@ GitHub Actions（`.github/workflows/build.yml`）在每次 `push`/tag 时自动�
 1. 设置 JDK 17 + Android SDK（platform-34 / build-tools-34.0.0）
 2. `scripts/build.sh` 构建并用正式 keystore 签名
 3. 上传 APK artifact，并用 `gh release create` **自动发布为正式 Release**（每次构建一个）
-4. 版本号：tag 触发取 `v` 去前缀（如 `v1.7.888 → 1.7.888`，`versionCode=1000+patch`）；分支触发用 `dev-<run_number>`；tag 版本额外标为 latest
+4. 版本号：统一采用**语义化版本 `x.y.z`**（`versionName`）。tag 触发取 `v` 去前缀（如 `v1.0.0 → 1.0.0`）；分支触发用 `1.0.<run_number>`；`versionCode` 一律为 `1000+run_number`（全局单调递增，保证任何版本覆盖安装安全）；tag 版本额外标为 latest
 
 ## GitHub Secrets（必需）
 
