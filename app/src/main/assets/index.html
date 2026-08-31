@@ -178,6 +178,16 @@
   </div>
 </div>
 
+<!-- 账号列表弹层（覆盖式底部 sheet，不占用"我的"页布局高度；只列其他账号+末尾添加，不重复当前账号） -->
+<div id="account-sheet" class="sheet hidden">
+  <div class="sheet-mask" data-close></div>
+  <div class="sheet-panel">
+    <div class="sheet-title" id="account-sheet-title">切换账号</div>
+    <div class="acct-sheet-list" id="account-sheet-list"></div>
+    <div class="sheet-item cancel" data-close>取消</div>
+  </div>
+</div>
+
 <!-- 账号操作菜单（切换/删除） -->
 <div id="account-action" class="sheet hidden">
   <div class="sheet-mask" data-close></div>

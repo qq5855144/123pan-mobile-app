@@ -133,7 +133,12 @@
     apk: '<circle cx="5.5" cy="10.5" r="1.5" fill="currentColor" stroke="none"/><circle cx="18.5" cy="10.5" r="1.5" fill="currentColor" stroke="none"/><path d="M6.5 7h11a4 4 0 0 1 4 4v4.5a3 3 0 0 1-3 3H5.5a3 3 0 0 1-3-3V11a4 4 0 0 1 4-4z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M7.7 6V3.8M16.3 6V3.8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>',
     search: '<circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" stroke-width="2"/><path d="M21 21l-4.3-4.3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>',
     'x-circle': '<circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="2"/><path d="M15 9l-6 6M9 9l6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>',
-    'folder-move': '<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M8 13h6M11 10l-3 3 3 3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>'
+    'folder-move': '<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M8 13h6M11 10l-3 3 3 3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
+    'chevron-down': '<path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
+    'chevron-up': '<path d="M6 15l6-6 6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
+    'chevron-right': '<path d="M9 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
+    plus: '<path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
+    check: '<path d="M20 6L9 17l-5-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>'
   };
   function applySvg(el, name) {
     var inner = ICON_SVG[name];
@@ -1355,7 +1360,9 @@
     }
     loadMine();
   }
-  // 渲染"我的"页的账号列表
+  // 渲染"我的"页的账号管理。
+  // 新布局：我的界面只显示【当前账号 + 展开按钮】；点击按钮打开覆盖式底部 sheet 弹层显示账号列表。
+  // 弹层内只列【其他账号】+ 末尾"添加账号"按钮（不重复当前账号），且为覆盖层不占用"我的"页布局高度。
   function renderAccountList() {
     var box = $('account-list');
     if (!box) return;
@@ -1368,38 +1375,103 @@
     }
     var cur = currentAccountUser();
     if (list.length === 0) {
-      box.innerHTML = '<div class="panel-empty" style="padding:20px 10px"><p>暂无保存的账号</p></div>';
+      box.innerHTML = ''
+        + '<div class="acct-summary">'
+        + '<div class="acct-avatar sm"><span class="mi-icon" data-icon="user"></span></div>'
+        + '<div class="acct-info"><div class="acct-user">未登录账号</div>'
+        + '<div class="acct-addline" data-add="1">添加账号</div></div>'
+        + '<span class="acct-toggle"><span class="mi-icon" data-icon="plus"></span></span>'
+        + '</div>';
+      injectIcons(box);
+      bindAccountList(box);
       return;
     }
+    // 当前账号（用于折叠区展示）
+    var curName = cur || state.user || list[0].user;
+    var curAcct = null;
+    for (var i = 0; i < list.length; i++) { if (list[i].user === curName) { curAcct = list[i]; break; } }
+    if (!curAcct) curAcct = list[0];
+    var cLetter = (curAcct.user.charAt(0) || '用').toUpperCase();
+
     var html = '';
-    list.forEach(function (a) {
-      var isCur = a.user === cur || (!cur && a.user === state.user);
-      var name = a.user || '';
-      var letter = (name.charAt(0) || '用').toUpperCase();
-      // 账号池：紧凑横向胶囊，每账号固定宽高，不会随账号数量纵向拉高"我的"页。
-      // 当前账号加 current 类高亮（蓝边+蓝头像+右下'当前'角标）；播放后点胶囊开操作菜单。
-      html += '<div class="acct-item' + (isCur ? ' current' : '') + '" data-user="' + esc(name) + '">'
-        + '<div class="acct-avatar">' + esc(letter) + '</div>'
-        + '<div class="acct-info">'
-        + '<div class="acct-user">' + esc(name) + '</div>'
-        + (isCur ? '<span class="acct-current"><span class="mi-icon" data-icon="check"></span>当前</span>'
-                  : '<span class="acct-meta">点击</span>')
-        + '</div>'
-        + '</div>';
-    });
+    // ---- 折叠区：当前账号 + 展开按钮 ----
+    html += '<div class="acct-summary" data-summary="1">'
+      + '<div class="acct-avatar sm">' + esc(cLetter) + '</div>'
+      + '<div class="acct-info">'
+      + '<div class="acct-user">' + esc(curAcct.user) + '</div>'
+      + '<div class="acct-meta"><span class="mi-icon" data-icon="check"></span>当前账号</div>'
+      + '</div>'
+      + '<span class="acct-toggle" data-toggle="1">'
+      + '<span class="mi-icon" data-icon="chevron-down"></span>'
+      + '</span>'
+      + '</div>';
+
+    // ---- 展开态：改为覆盖式底部 sheet 弹层（不占用"我的"页布局高度） ----
+    // 折叠区仅展示当前账号+展开按钮；点击展开打开 #account-sheet 弹层，
+    // 弹层内只列【其他账号】+ 末尾添加按钮，不重复显示当前账号。
+    // 注：不再在页面内追加 .acct-list（避免撑高"我的"页）。
+
     box.innerHTML = html;
     if (cur === '' && list.length > 0) setCurrentAccountUser(list[0].user);
-    // 注入列表内动态图标
+    // 注入折叠区动态图标（chevron/check 等）
     injectIcons(box);
-    // 绑定点击：打开账号操作菜单
-    box.querySelectorAll('.acct-item').forEach(function (item) {
-      item.addEventListener('click', function () {
-        openAccountAction(item.getAttribute('data-user'));
-      });
-    });
-    box.addEventListener('click', function (e) {
+    bindAccountList(box);
+  }
+  // 账号管理折叠区事件委托：点击当前账号行/展开按钮 → 打开账号列表弹层
+  function bindAccountList(box) {
+    box.onclick = function (e) {
       e.stopPropagation();
-    });
+      var t = e.target && e.target.closest ? e.target.closest('[data-summary],[data-toggle],[data-add]') : null;
+      if (!t) return;
+      if (t.hasAttribute('data-summary') || t.hasAttribute('data-toggle')) { openAccountSheet(); return; }
+      if (t.hasAttribute('data-add')) { openAddAccount(); return; }
+    };
+  }
+  // 打开账号列表弹层（覆盖式底部 sheet）。列表只列其他账号 + 末尾添加按钮，不重复当前账号。
+  function openAccountSheet() {
+    var list = loadAccounts();
+    var cur = currentAccountUser();
+    var others = list.filter(function (a) { return a.user !== cur; });
+    var box = $('account-sheet-list');
+    if (!box) return;
+    var html = '';
+    if (others.length === 0) {
+      html += '<div class="acct-empty">暂无其他账号</div>';
+    } else {
+      others.forEach(function (a) {
+        var name = a.user || '';
+        var letter = (name.charAt(0) || '用').toUpperCase();
+        html += '<div class="acct-item" data-user="' + esc(name) + '">'
+          + '<div class="acct-avatar xs">' + esc(letter) + '</div>'
+          + '<div class="acct-info">'
+          + '<div class="acct-user">' + esc(name) + '</div>'
+          + '<span class="acct-meta">点击切换</span>'
+          + '</div>'
+          + '<span class="acct-goto"><span class="mi-icon" data-icon="chevron-right"></span></span>'
+          + '</div>';
+      });
+    }
+    // 列表末尾：添加账号按钮
+    html += '<div class="acct-item add" data-add="1">'
+      + '<span class="acct-plus"><span class="mi-icon" data-icon="plus"></span></span>'
+      + '<div class="acct-info"><div class="acct-user">添加账号</div></div>'
+      + '</div>';
+    box.innerHTML = html;
+    injectIcons(box);
+    // 弹层内事件委托：账号条目 → 操作菜单；添加按钮 → 添加账号
+    box.onclick = function (e) {
+      e.stopPropagation();
+      var t = e.target && e.target.closest ? e.target.closest('[data-add],[data-user]') : null;
+      if (!t) return;
+      var self = this;
+      if (t.hasAttribute('data-add')) { hide($('account-sheet')); openAddAccount(); return; }
+      if (t.hasAttribute('data-user')) {
+        var u = t.getAttribute('data-user');
+        hide($('account-sheet'));
+        openAccountAction(u);
+      }
+    };
+    show($('account-sheet'));
   }
   // 账号操作菜单：切换 / 删除
   function openAccountAction(user) {

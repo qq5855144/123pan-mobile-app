@@ -222,39 +222,77 @@ svg { display: block; }
 .mine-item-btn { cursor: pointer; }
 .mine-item-btn:active { background: #f5f7fb; }
 .mine-arrow { font-size: 18px; color: #c3c8d1; transform: translateY(-1px); }
-/* 账号池（多账号）：横向滚动胶囊布局，账号再多也保持固定高度，不会把"我的"页纵向拉高 */
+/* 账号管理（多账号）：折叠态仅显示当前账号 + 展开按钮；展开态显示紧凑账号列表，末尾为添加账号按钮
+   折叠态固定单行，展开态紧凑列表，账号再多也不拉高"我的"页、不超出单屏堆积 */
 #account-list {
-  display: flex; flex-direction: row; gap: 10px; align-items: stretch;
-  overflow-x: auto; -webkit-overflow-scrolling: touch; scrollbar-width: none;
-  padding: 2px 2px 8px; background: transparent;
+  background: transparent; margin-bottom: 6px;
 }
-#account-list::-webkit-scrollbar { display: none; height: 0; }
-.acct-item {
-  display: flex; flex-direction: column; align-items: center; justify-content: center;
-  flex: 0 0 92px; height: 104px; gap: 6px; padding: 10px 6px;
-  background: #fff; border-radius: 14px; border: 1px solid #eef0f5; cursor: pointer;
-  position: relative;
+/* 折叠区容器：统一白卡片，包裹 summary + 展开列表 */
+#account-list { border-radius: 12px; }
+#account-list > .acct-summary {
+  border-radius: 12px;
 }
-.acct-item.current { border-color: #2B6DE8; background: #f0f5ff; }
-.acct-item:active { background: #ecf2fe; }
+/* 原独立"添加账号"入口移除（添加按钮已移至展开列表末尾） */
+.mine-item-btn#account-add { display: none; }
+/* 当前账号折叠行 */
+.acct-summary {
+  display: flex; align-items: center; gap: 10px;
+  background: #fff; padding: 12px 14px; border-radius: 12px;
+  border: 1px solid #eef0f5; cursor: pointer;
+}
+.acct-summary:active { background: #f5f7fb; }
+/* 紧凑头像：sm=折叠区当前账号，xs=展开列表条目 */
 .acct-avatar {
-  width: 44px; height: 44px; border-radius: 50%; background: #eaf1ff; color: #2B6DE8;
-  display: flex; align-items: center; justify-content: center; font-size: 18px;
-  flex: 0 0 44px;
+  border-radius: 50%; background: #eaf1ff; color: #2B6DE8;
+  display: flex; align-items: center; justify-content: center; font-weight: 600;
+  flex: 0 0 auto;
 }
-.acct-item.current .acct-avatar { background: #2B6DE8; color: #fff; }
-.acct-info { min-width: 0; display: flex; flex-direction: column; align-items: center; gap: 2px; }
+.acct-avatar.sm { width: 40px; height: 40px; font-size: 16px; }
+.acct-avatar.xs { width: 34px; height: 34px; font-size: 14px; }
+.acct-avatar .mi-icon { width: 18px; height: 18px; }
+/* 账号文本信息（统一左对齐） */
+.acct-info { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 2px; }
 .acct-user {
-  font-size: 12px; font-weight: 600; color: #1a1a1a; max-width: 80px;
+  font-size: 14px; font-weight: 600; color: #1a1a1a;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.acct-meta { font-size: 10px; color: #9aa2b1; }
-.acct-current {
-  display: inline-flex; align-items: center; gap: 2px; font-size: 10px;
-  color: #2B6DE8; font-weight: 600; padding: 2px 6px; border-radius: 8px; background: #e3edff;
+.acct-meta { font-size: 11px; color: #9aa2b1; display: inline-flex; align-items: center; gap: 3px; }
+.acct-meta .mi-icon { width: 12px; height: 12px; color: #2B6DE8; }
+.acct-meta.cur { color: #2B6DE8; font-weight: 500; }
+/* 展开按钮（右侧） */
+.acct-toggle {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 28px; height: 28px; border-radius: 8px; background: #f0f3f8; color: #2B6DE8;
+  flex: 0 0 28px;
 }
-.acct-current .mi-icon { width: 12px; height: 12px; }
-.acct-more { display: none; }
+.acct-toggle .mi-icon { width: 16px; height: 16px; }
+/* 展开列表（覆盖式底部 sheet 弹层内容器）：列表在覆盖层内，不占用"我的"页布局高度 */
+.acct-sheet-list {
+  border-radius: 12px; overflow: hidden; margin-bottom: 18px;
+  border: 1px solid #eef0f5;
+}
+.acct-empty { padding: 18px 14px; text-align: center; color: #9aa2b1; font-size: 14px; }
+/* 紧凑账号条目 */
+.acct-item {
+  display: flex; align-items: center; gap: 10px;
+  background: #fff; padding: 10px 14px; cursor: pointer;
+}
+.acct-item + .acct-item { border-top: 1px solid #f2f4f8; }
+.acct-item:active { background: #f5f7fb; }
+.acct-item.current { background: #f0f5ff; }
+.acct-item.current .acct-avatar { background: #2B6DE8; color: #fff; }
+.acct-goto { color: #c3c8d1; display: inline-flex; flex: 0 0 auto; }
+.acct-goto .mi-icon { width: 16px; height: 16px; color: #c3c8d1; }
+/* 列表末尾：添加账号 */
+.acct-item.add { color: #2B6DE8; font-weight: 600; }
+.acct-item.add .acct-user { color: #2B6DE8; }
+.acct-plus {
+  width: 34px; height: 34px; border-radius: 50%; flex: 0 0 34px;
+  background: #eaf1ff; color: #2B6DE8; display: flex;
+  align-items: center; justify-content: center;
+}
+.acct-plus .mi-icon { width: 16px; height: 16px; }
+.acct-addline { font-size: 12px; color: #2B6DE8; }
 /* 账号操作菜单 */
 .account-actions { margin-bottom: 18px; }
 .account-action-item {
