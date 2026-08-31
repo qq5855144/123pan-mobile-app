@@ -1303,12 +1303,36 @@
     saveAccounts(list);
     setCurrentAccountUser(user);
   }
-  // 切换账号：统一走官方登录页重新登录（本地 token 无法用于官方 cookie 域，官方页认证最可靠）
+  // 切换账号：用本地已保存的账号凭证（token）直接切换，无需重新登录。
+  // 多账号系统设计：每个账号在首次登录时已将 token 存入 pan_accounts 列表，
+  // 切换时直接取出目标账号 token 更新会话（前端 state + 原生 API 认证 token + 当前标记），
+  // 并刷新文件列表到根目录。仅当目标账号缺少本地 token（异常/旧数据）才回退官方登录页重新登录。
   function switchAccount(user) {
     if (user === state.user) { toast('已是当前账号'); return; }
-    toast('请在弹出的官方登录页中登录「' + user + '」账号');
-    try { localStorage.setItem(ACCT_CUR, ''); } catch (e) {}
-    openOfficialLogin();
+    var list = loadAccounts();
+    var target = null;
+    for (var i = 0; i < list.length; i++) {
+      if (list[i].user === user) { target = list[i]; break; }
+    }
+    // 目标账号缺少本地凭证：回退官方登录页重新登录
+    if (!target || !target.token) {
+      toast('该账号缺少本地凭证，请在官方登录页重新登录');
+      try { localStorage.setItem(ACCT_CUR, ''); } catch (e) {}
+      openOfficialLogin();
+      return;
+    }
+    // 直接用本地 token 切换（无网络 re-login）
+    state.token = target.token;
+    state.user = target.user;
+    setCurrentAccountUser(user);
+    try { if (bridge && bridge.saveSession) bridge.saveSession(target.token, user, target.pass || ''); } catch (e) {}
+    // 重置到根目录并重新加载文件列表（使用新账号 token 发起 API 请求）
+    state.currentDir = 0;
+    state.breadcrumb = [];
+    state.selectedMap = {};
+    toast('已切换到「' + user + '」');
+    enterMain();
+    loadList();
   }
   // 删除账号
   function removeAccount(user) {

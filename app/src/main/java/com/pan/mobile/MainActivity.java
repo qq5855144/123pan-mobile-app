@@ -1551,11 +1551,20 @@ public class MainActivity extends Activity {
             });
         }
 
-        // 重新打开官方登录页（前端兜底：登录页异常时再次进入官方登录）
+        // 打开官方登录页（多账号"添加账号/切换账号"及登录页兜底共用）。
+        // 关键：必须先清除 WebView 官方域 cookie（含 sso-token）再加载登录页——
+        // 否则官方登录页 centerlogin 检测到已有登录态会自动重定向回已登录账号，
+        // 导致"添加账号"时不显示登录表单而是直接进入已登录账号（多账号缺陷）。
+        // 与 logout() 保持一致：removeAllCookies + flash 后再 loadUrl 官方登录页。
         @JavascriptInterface
         public void openOfficialLogin() {
             act.handler.post(() -> {
                 if (act.webView != null) {
+                    try {
+                        android.webkit.CookieManager cm = android.webkit.CookieManager.getInstance();
+                        cm.removeAllCookies(null);
+                        cm.flush();
+                    } catch (Exception ignored) {}
                     act.officialLoginDone = false;
                     act.webView.loadUrl(OFFICIAL_LOGIN_URL);
                 }
