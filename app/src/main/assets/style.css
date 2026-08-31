@@ -50,9 +50,10 @@ svg { display: block; }
 .field input:focus { outline: none; border-color: #2B6DE8; }
 .btn-primary {
   width: 100%; height: 46px; margin-top: 8px; border-radius: 12px; background: #2B6DE8;
-  color: #fff; font-size: 15px; font-weight: 600;
+  color: #fff; font-size: 15px; font-weight: 600; border: none;
 }
 .btn-primary:disabled { opacity: .6; }
+.btn-lg { height: 50px; font-size: 16px; margin-top: 4px; box-shadow: 0 6px 16px rgba(43,109,232,.28); }
 .login-msg { min-height: 20px; color: #e5484d; font-size: 12px; margin-top: 10px; text-align: center; }
 /* 验证码登录：手机号 + 验证码 + 获取验证码按钮 */
 .vcode-row { display: flex; align-items: flex-start; gap: 0; }

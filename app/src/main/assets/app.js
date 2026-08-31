@@ -361,113 +361,28 @@
     return (s === 'completed') ? '已完成' : (s === 'failed' ? '失败' : String(s || '下载中'));
   }
 
-  // ---------- 登录 ----------
-  function doLogin() {
-    var u = $('login-user').value.trim();
-    var p = $('login-pass').value;
-    if (!u || !p) { $('login-msg').textContent = '请输入账号和密码'; return; }
-    var btn = $('login-btn');
-    btn.disabled = true;
-    $('login-msg').textContent = '登录中...';
-    api('POST', API.signIn,
-      JSON.stringify({ type: 1, passport: u, password: p }),
-      false,
-      function (d) {
-        btn.disabled = false;
-        var tok = d && d.data ? (d.data.token || d.data.authorization || '') : '';
-        if (tok) {
-          if (tok.indexOf('Bearer ') === 0) tok = tok.slice(7);
-          state.token = tok;
-          state.user = u;
-          bridge.saveSession(tok, u, p);
-          addAccount(u, tok, p);   // 多账号：登录后加入账号列表并设为当前
-          toast('登录成功');
-          enterMain();
-        } else {
-          $('login-msg').textContent = (d && d.message) ? d.message
-            : ('登录失败[' + (d && d.code != null ? d.code : '') + ']，请检查账号密码');
-        }
-      });
-  }
-
-  // ---------- 验证码（短信）登录 ----------
-  var vcodeTimer = null;          // 获取验证码倒计时定时器
-  var vcodeCountdown = 0;         // 倒计时剩余秒数
-  function switchLoginTab(tab) {
-    // tab: 'vcode'(验证码登录) 或 'pwd'(账号密码)
-    var pwdPanel = $('login-pwd-panel');
-    var vcodePanel = $('login-vcode-panel');
-    if (!pwdPanel || !vcodePanel) return;
-    pwdPanel.classList.toggle('hidden', tab !== 'pwd');
-    vcodePanel.classList.toggle('hidden', tab !== 'vcode');
-    // 更新标签高亮
-    var tabs = document.querySelectorAll('#login-tabs .login-tab');
-    for (var i = 0; i < tabs.length; i++) {
-      tabs[i].classList.toggle('active', tabs[i].getAttribute('data-login-tab') === tab);
-    }
-  }
-  function isValidPhone(p) {
-    return /^1\d{10}$/.test(String(p || '').trim());
-  }
-  // 获取短信验证码：官方 get_vcode 强制阿里云滑块（traceless）验证，App 内无法独立发起。
-  // 因此统一通过"官方登录页"完成滑块 + 短信验证码登录（见 doVcodeLogin）。
-  function sendVcode() {
-    var phone = $('vcode-phone').value.trim();
-    if (!isValidPhone(phone)) { $('vcode-msg').textContent = '请输入正确的11位手机号'; return; }
-    openOfficialLogin(phone);
-  }
-  // 打开官方 123 云盘登录页，由用户完成阿里云滑块 + 短信验证码登录（原生 WebView 承载）
-  function openOfficialLogin(prefillPhone) {
-    var phone = (prefillPhone || $('vcode-phone').value || '').trim();
-    $('vcode-msg').textContent = '正在打开官方登录页...';
+  // ---------- 登录（统一采用官方 123 云盘登录页） ----------
+  // App 未登录时，原生主 WebView 直接加载官方登录页（支持账号密码 / 手机验证码，含阿里云安全滑块），
+  // 登录成功由原生捕获 sso-token 存会话，并自动切回本地 SPA 主界面（注入 __restoreSession 恢复态）。
+  // 打开官方登录页（登录页兜底按钮）
+  function openOfficialLogin() {
+    var msg = $('official-login-msg');
     if (bridge && bridge.openOfficialLogin) {
-      bridge.openOfficialLogin(phone ? phone : '');
-    } else {
-      $('vcode-msg').textContent = '当前环境不支持官方登录';
+      if (msg) msg.textContent = '正在打开官方登录页...';
+      bridge.openOfficialLogin();
+    } else if (msg) {
+      msg.textContent = '当前环境不支持官方登录';
     }
   }
-  // 原生在官方登录成功后回调：token 已由原生写入本地会话，这里同步前端状态并进入主界面
+  // 原生在官方登录成功后回调（token 已由原生写入会话；本地 SPA 加载时 __restoreSession 自动恢复）
   window.__onOfficialLogin = function (token, username) {
-    var u = username || $('vcode-phone').value || '';
-    if (token) {
+    if (token && !state.token) {
       state.token = token;
-      state.user = u;
-      addAccount(u, token, '');
+      state.user = username || '';
       toast('登录成功');
       enterMain();
-    } else {
-      $('vcode-msg').textContent = '未能获取登录凭证，请重试';
     }
   };
-  // 关闭官方登录页（用户点击"返回"）
-  window.__closeOfficialLogin = function () {
-    if (bridge && bridge.closeOfficialLogin) bridge.closeOfficialLogin();
-  };
-  function startVcodeCountdown(sec) {
-    vcodeCountdown = Number(sec) || 60;
-    var btn = $('vcode-send');
-    btn.disabled = true;
-    btn.textContent = vcodeCountdown + 's后重发';
-    if (vcodeTimer) clearInterval(vcodeTimer);
-    vcodeTimer = setInterval(function () {
-      vcodeCountdown--;
-      if (vcodeCountdown <= 0) {
-        clearInterval(vcodeTimer);
-        vcodeTimer = null;
-        btn.disabled = false;
-        btn.textContent = '获取验证码';
-      } else {
-        btn.textContent = vcodeCountdown + 's后重发';
-      }
-    }, 1000);
-  }
-  // 验证码登录：官方 sign_in(type:3) 需先过阿里云滑块，App 内无法独立完成。
-  // 统一交由官方登录页处理（滑块 + 短信验证码），成功由原生回调 __onOfficialLogin。
-  function doVcodeLogin() {
-    var phone = $('vcode-phone').value.trim();
-    if (!isValidPhone(phone)) { $('vcode-msg').textContent = '请输入正确的11位手机号'; return; }
-    openOfficialLogin(phone);
-  }
 
   function enterMain() {
     hide($('page-login'));
@@ -1588,22 +1503,9 @@
         switchView(tab.getAttribute('data-view'));
       });
     });
-    // 登录
-    $('login-btn').addEventListener('click', doLogin);
-    $('login-pass').addEventListener('keydown', function (e) { if (e.key === 'Enter') doLogin(); });
-    // 验证码（短信）登录
-    var loginTabs = document.querySelectorAll('#login-tabs .login-tab');
-    for (var ti = 0; ti < loginTabs.length; ti++) {
-      loginTabs[ti].addEventListener('click', function () {
-        switchLoginTab(this.getAttribute('data-login-tab'));
-      });
-    }
-    var vcodeLoginBtn = $('vcode-login-btn');
-    if (vcodeLoginBtn) vcodeLoginBtn.addEventListener('click', doVcodeLogin);
-    var vcodePhoneEl = $('vcode-phone');
-    if (vcodePhoneEl) vcodePhoneEl.addEventListener('keydown', function (e) { if (e.key === 'Enter') doVcodeLogin(); });
-    // 打开登录页时默认显示"验证码登录"标签
-    switchLoginTab('vcode');
+    // 登录（统一官方登录页）
+    var officialLoginBtn = $('official-login-btn');
+    if (officialLoginBtn) officialLoginBtn.addEventListener('click', openOfficialLogin);
     // 重命名
     $('rename-ok').addEventListener('click', doRename);
     // 自定义确认弹窗：点"确定"执行回调
