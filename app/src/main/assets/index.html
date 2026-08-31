@@ -13,8 +13,25 @@
     <div class="login-wrap">
       <div class="login-logo">123<span>云盘</span></div>
 
+      <!-- 登录方式切换 -->
+      <div class="login-tabs" id="login-tabs">
+        <div class="login-tab active" data-login-tab="vcode">验证码登录</div>
+        <div class="login-tab" data-login-tab="pwd">账号密码</div>
+      </div>
+
+      <!-- 验证码（短信）登录：官方登录页承载（阿里云滑块 + 短信验证码） -->
+      <div id="login-vcode-panel" class="login-panel">
+        <div class="field">
+          <label>手机号</label>
+          <input id="vcode-phone" type="tel" placeholder="请输入手机号" autocomplete="tel" maxlength="11" inputmode="numeric">
+        </div>
+        <button id="vcode-login-btn" class="btn-primary">验证码登录</button>
+        <div class="login-sub">将打开官方 123 云盘登录页，完成滑块安全验证与短信验证码登录<br>验证即登录，未注册将自动创建账号</div>
+        <div id="vcode-msg" class="login-msg"></div>
+      </div>
+
       <!-- 账号密码登录 -->
-      <div id="login-pwd-panel" class="login-panel">
+      <div id="login-pwd-panel" class="login-panel hidden">
         <div class="field">
           <label>账号</label>
           <input id="login-user" type="text" placeholder="手机号 / 邮箱" autocomplete="username">

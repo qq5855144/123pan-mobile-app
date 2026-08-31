@@ -54,6 +54,17 @@ svg { display: block; }
 }
 .btn-primary:disabled { opacity: .6; }
 .login-msg { min-height: 20px; color: #e5484d; font-size: 12px; margin-top: 10px; text-align: center; }
+/* 验证码登录：手机号 + 验证码 + 获取验证码按钮 */
+.vcode-row { display: flex; align-items: flex-start; gap: 0; }
+.vcode-input-wrap { flex: 1; min-width: 0; }
+.vcode-input-wrap .field-input { margin-bottom: 0; }
+.vcode-send-btn {
+  flex: 0 0 auto; height: 46px; margin-left: 10px; padding: 0 14px; margin-top: 21px;
+  border-radius: 12px; background: #2B6DE8; color: #fff; font-size: 14px; font-weight: 500;
+  white-space: nowrap;
+}
+.vcode-send-btn:disabled { background: #c5d4f5; }
+.vcode-send-btn:active { opacity: .85; }
 .qr-box { display: flex; flex-direction: column; align-items: center; padding: 20px; }
 .qr-img { width: 210px; height: 210px; border-radius: 14px; border: 1px solid #eef0f5; background: #fff; }
 .qr-status { margin-top: 14px; color: #5f6672; font-size: 13px; }

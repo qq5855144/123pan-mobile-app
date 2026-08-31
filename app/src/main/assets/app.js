@@ -45,7 +45,10 @@
     move: 'https://api.123pan.cn/b/api/file/mod_pid',                // 移动文件/文件夹到指定目录
     signIn: 'https://login.123pan.com/b/api/user/sign_in',
     qrGenerate: 'https://login.123pan.com/api/user/qr-code/generate',
-    qrResult: 'https://login.123pan.com/api/user/qr-code/result'
+    qrResult: 'https://login.123pan.com/api/user/qr-code/result',
+    // 验证码（短信）登录接口（走 user.123pan.cn 域）
+    getVcode: 'https://user.123pan.cn/api/user/get_vcode',      // 获取短信验证码
+    vcodeSignIn: 'https://user.123pan.cn/api/user/sign_in'      // 验证码登录（type:3）
   };
   // 回收站操作 event 值（统一走 POST /a/api/file/trash，通过 event 区分）
   var RECYCLE_EVENT = {
@@ -385,6 +388,85 @@
             : ('登录失败[' + (d && d.code != null ? d.code : '') + ']，请检查账号密码');
         }
       });
+  }
+
+  // ---------- 验证码（短信）登录 ----------
+  var vcodeTimer = null;          // 获取验证码倒计时定时器
+  var vcodeCountdown = 0;         // 倒计时剩余秒数
+  function switchLoginTab(tab) {
+    // tab: 'vcode'(验证码登录) 或 'pwd'(账号密码)
+    var pwdPanel = $('login-pwd-panel');
+    var vcodePanel = $('login-vcode-panel');
+    if (!pwdPanel || !vcodePanel) return;
+    pwdPanel.classList.toggle('hidden', tab !== 'pwd');
+    vcodePanel.classList.toggle('hidden', tab !== 'vcode');
+    // 更新标签高亮
+    var tabs = document.querySelectorAll('#login-tabs .login-tab');
+    for (var i = 0; i < tabs.length; i++) {
+      tabs[i].classList.toggle('active', tabs[i].getAttribute('data-login-tab') === tab);
+    }
+  }
+  function isValidPhone(p) {
+    return /^1\d{10}$/.test(String(p || '').trim());
+  }
+  // 获取短信验证码：官方 get_vcode 强制阿里云滑块（traceless）验证，App 内无法独立发起。
+  // 因此统一通过"官方登录页"完成滑块 + 短信验证码登录（见 doVcodeLogin）。
+  function sendVcode() {
+    var phone = $('vcode-phone').value.trim();
+    if (!isValidPhone(phone)) { $('vcode-msg').textContent = '请输入正确的11位手机号'; return; }
+    openOfficialLogin(phone);
+  }
+  // 打开官方 123 云盘登录页，由用户完成阿里云滑块 + 短信验证码登录（原生 WebView 承载）
+  function openOfficialLogin(prefillPhone) {
+    var phone = (prefillPhone || $('vcode-phone').value || '').trim();
+    $('vcode-msg').textContent = '正在打开官方登录页...';
+    if (bridge && bridge.openOfficialLogin) {
+      bridge.openOfficialLogin(phone ? phone : '');
+    } else {
+      $('vcode-msg').textContent = '当前环境不支持官方登录';
+    }
+  }
+  // 原生在官方登录成功后回调：token 已由原生写入本地会话，这里同步前端状态并进入主界面
+  window.__onOfficialLogin = function (token, username) {
+    var u = username || $('vcode-phone').value || '';
+    if (token) {
+      state.token = token;
+      state.user = u;
+      addAccount(u, token, '');
+      toast('登录成功');
+      enterMain();
+    } else {
+      $('vcode-msg').textContent = '未能获取登录凭证，请重试';
+    }
+  };
+  // 关闭官方登录页（用户点击"返回"）
+  window.__closeOfficialLogin = function () {
+    if (bridge && bridge.closeOfficialLogin) bridge.closeOfficialLogin();
+  };
+  function startVcodeCountdown(sec) {
+    vcodeCountdown = Number(sec) || 60;
+    var btn = $('vcode-send');
+    btn.disabled = true;
+    btn.textContent = vcodeCountdown + 's后重发';
+    if (vcodeTimer) clearInterval(vcodeTimer);
+    vcodeTimer = setInterval(function () {
+      vcodeCountdown--;
+      if (vcodeCountdown <= 0) {
+        clearInterval(vcodeTimer);
+        vcodeTimer = null;
+        btn.disabled = false;
+        btn.textContent = '获取验证码';
+      } else {
+        btn.textContent = vcodeCountdown + 's后重发';
+      }
+    }, 1000);
+  }
+  // 验证码登录：官方 sign_in(type:3) 需先过阿里云滑块，App 内无法独立完成。
+  // 统一交由官方登录页处理（滑块 + 短信验证码），成功由原生回调 __onOfficialLogin。
+  function doVcodeLogin() {
+    var phone = $('vcode-phone').value.trim();
+    if (!isValidPhone(phone)) { $('vcode-msg').textContent = '请输入正确的11位手机号'; return; }
+    openOfficialLogin(phone);
   }
 
   function enterMain() {
@@ -1509,6 +1591,19 @@
     // 登录
     $('login-btn').addEventListener('click', doLogin);
     $('login-pass').addEventListener('keydown', function (e) { if (e.key === 'Enter') doLogin(); });
+    // 验证码（短信）登录
+    var loginTabs = document.querySelectorAll('#login-tabs .login-tab');
+    for (var ti = 0; ti < loginTabs.length; ti++) {
+      loginTabs[ti].addEventListener('click', function () {
+        switchLoginTab(this.getAttribute('data-login-tab'));
+      });
+    }
+    var vcodeLoginBtn = $('vcode-login-btn');
+    if (vcodeLoginBtn) vcodeLoginBtn.addEventListener('click', doVcodeLogin);
+    var vcodePhoneEl = $('vcode-phone');
+    if (vcodePhoneEl) vcodePhoneEl.addEventListener('keydown', function (e) { if (e.key === 'Enter') doVcodeLogin(); });
+    // 打开登录页时默认显示"验证码登录"标签
+    switchLoginTab('vcode');
     // 重命名
     $('rename-ok').addEventListener('click', doRename);
     // 自定义确认弹窗：点"确定"执行回调

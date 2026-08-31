@@ -2,6 +2,7 @@ package com.pan.mobile;
 
 import android.annotation.SuppressLint;
 import android.app.Activity;
+import android.app.Dialog;
 import android.app.DownloadManager;
 import android.content.Context;
 import android.content.ClipData;
@@ -17,6 +18,9 @@ import android.os.Handler;
 import android.os.Looper;
 import android.provider.OpenableColumns;
 import android.util.Log;
+import android.view.Gravity;
+import android.view.View;
+import android.view.ViewGroup;
 import android.view.Window;
 import android.webkit.CookieManager;
 import android.webkit.DownloadListener;
@@ -27,7 +31,11 @@ import android.webkit.WebChromeClient;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+import android.widget.FrameLayout;
+import android.widget.LinearLayout;
+import android.widget.TextView;
 import android.widget.Toast;
+import android.graphics.Color;
 
 import java.io.File;
 import java.io.FileInputStream;
@@ -92,6 +100,14 @@ public class MainActivity extends Activity {
     private String baseHeaders =
         "platform=android;app-version=61;x-app-version=2.4.0;user-agent=123pan/v2.4.0("
         + osVersion + ";Xiaomi)";
+
+    // ---- 官方登录（验证码/滑块）覆盖层 ----
+    private Dialog officialLoginDialog;   // 承载官方登录页的全屏 Dialog
+    private WebView officialLoginWeb;     // 官方登录页 WebView
+    private boolean officialLoginDone = false; // 是否已捕获到 sso-token（避免重复回填）
+    private boolean officialLoginPrefilled = false; // 是否已在官方登录页预填过手机号
+    private static final String OFFICIAL_LOGIN_URL =
+        "https://user.123pan.cn/centerlogin?redirect_url=https%3A%2F%2Fyun.123pan.cn%2F&source_page=website";
 
     @SuppressLint("SetJavaScriptEnabled")
     @Override
@@ -1375,6 +1391,194 @@ public class MainActivity extends Activity {
         dir.delete();
     }
 
+    // ============ 官方登录（验证码/滑块）覆盖层 ============
+
+    /** 打开官方 123 云盘登录页（全屏 Dialog 承载），由用户完成滑块 + 短信验证码登录。 */
+    @SuppressLint("SetJavaScriptEnabled")
+    private void openOfficialLogin(final String prefillPhone) {
+        runOnUiThread(() -> {
+            try {
+                if (officialLoginDialog != null && officialLoginDialog.isShowing()) return;
+                officialLoginDone = false;
+                officialLoginPrefilled = false;
+                final Context ctx = this;
+                final String phoneToPrefill = prefillPhone == null ? "" : prefillPhone.trim();
+
+                // 顶部标题栏（返回按钮 + 标题）
+                final LinearLayout header = new LinearLayout(ctx);
+                header.setOrientation(LinearLayout.HORIZONTAL);
+                header.setGravity(Gravity.CENTER_VERTICAL);
+                header.setBackgroundColor(Color.parseColor("#FAFAFA"));
+                int dp48 = dp(48);
+                TextView backBtn = new TextView(ctx);
+                backBtn.setText("✕");
+                backBtn.setTextSize(22);
+                backBtn.setTextColor(Color.parseColor("#333333"));
+                backBtn.setPadding(dp(12), 0, dp(12), 0);
+                backBtn.setClickable(true);
+                backBtn.setOnClickListener(v -> closeOfficialLogin());
+                header.addView(backBtn, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, dp48));
+                TextView title = new TextView(ctx);
+                title.setText("123云盘 · 官方登录");
+                title.setTextColor(Color.parseColor("#333333"));
+                title.setTextSize(17);
+                title.setGravity(Gravity.CENTER);
+                header.addView(title, new LinearLayout.LayoutParams(
+                    0, dp48, 1f));
+                // 右侧占位，使标题居中
+                TextView spacer = new TextView(ctx);
+                spacer.setWidth(dp(60));
+                header.addView(spacer, new LinearLayout.LayoutParams(
+                    dp(60), dp48));
+
+                // 内容根布局：标题栏在上，WebView 占满其余
+                final FrameLayout root = new FrameLayout(ctx);
+                root.addView(header, new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, dp48, Gravity.TOP));
+
+                officialLoginWeb = new WebView(ctx);
+                WebSettings ws = officialLoginWeb.getSettings();
+                ws.setJavaScriptEnabled(true);
+                ws.setDomStorageEnabled(true);
+                ws.setDatabaseEnabled(true);
+                ws.setAllowFileAccess(true);
+                ws.setUseWideViewPort(true);
+                ws.setLoadWithOverviewMode(true);
+                ws.setSupportZoom(true);
+                ws.setBuiltInZoomControls(true);
+                ws.setDisplayZoomControls(false);
+                ws.setCacheMode(WebSettings.LOAD_NO_CACHE);
+                FrameLayout.LayoutParams wvLp = new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
+                wvLp.topMargin = dp48;
+                root.addView(officialLoginWeb, wvLp);
+
+                officialLoginWeb.setWebViewClient(new WebViewClient() {
+                    @Override
+                    public void onPageFinished(WebView view, String url) {
+                        super.onPageFinished(view, url);
+                        tryCaptureSsoToken();
+                        // 首次加载官方登录页时预填手机号
+                        if (!officialLoginPrefilled && phoneToPrefill.length() > 0) {
+                            officialLoginPrefilled = true;
+                            String ph = json(phoneToPrefill);
+                            String prefillJs = "try{var i=document.querySelector('input[placeholder=\"请输入手机号\"]');"
+                                + "if(i){i.value='" + ph + "';i.dispatchEvent(new Event('input',{bubbles:true}));"
+                                + "i.dispatchEvent(new Event('change',{bubbles:true}));}}catch(e){}";
+                            view.evaluateJavascript(prefillJs, null);
+                        }
+                        // 兜底：页面跳转后 sso-token 可能稍后才种好，延迟重试
+                        handler.postDelayed(MainActivity.this::tryCaptureSsoToken, 1000);
+                        handler.postDelayed(MainActivity.this::tryCaptureSsoToken, 3000);
+                        handler.postDelayed(MainActivity.this::tryCaptureSsoToken, 6000);
+                    }
+                });
+                officialLoginWeb.loadUrl(OFFICIAL_LOGIN_URL);
+
+                officialLoginDialog = new Dialog(ctx);
+                officialLoginDialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
+                officialLoginDialog.setContentView(root);
+                officialLoginDialog.setCancelable(false);
+                officialLoginDialog.setCanceledOnTouchOutside(false);
+                officialLoginDialog.setOnDismissListener(d -> {
+                    officialLoginWeb = null;
+                    officialLoginDialog = null;
+                });
+                if (officialLoginDialog.getWindow() != null) {
+                    officialLoginDialog.getWindow().setLayout(
+                        ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
+                }
+                officialLoginDialog.show();
+            } catch (Exception e) {
+                Log.e("PAN", "openOfficialLogin fail: " + e, e);
+            }
+        });
+    }
+
+    /** 关闭官方登录覆盖层（回到主界面/登录页）。 */
+    private void closeOfficialLogin() {
+        runOnUiThread(() -> {
+            if (officialLoginDialog != null && officialLoginDialog.isShowing()) {
+                officialLoginDialog.dismiss();
+            }
+            officialLoginWeb = null;
+            officialLoginDialog = null;
+        });
+    }
+
+    /** 尝试从 Cookie 中捕获 sso-token，捕获成功则保存会话并回调前端。 */
+    private void tryCaptureSsoToken() {
+        try {
+            if (officialLoginDone || officialLoginWeb == null) return;
+            String sso = null;
+            String[] domains = {
+                "https://user.123pan.cn",
+                "https://yun.123pan.cn",
+                "https://www.123pan.cn",
+                "https://123pan.cn"
+            };
+            for (String d : domains) {
+                String cookies = CookieManager.getInstance().getCookie(d);
+                if (cookies == null || cookies.isEmpty()) continue;
+                for (String kv : cookies.split(";")) {
+                    kv = kv.trim();
+                    if (kv.startsWith("sso-token=")) { sso = kv.substring("sso-token=".length()); break; }
+                }
+                if (sso != null && !sso.isEmpty()) break;
+            }
+            if (sso == null || sso.isEmpty()) return;
+            officialLoginDone = true;
+            final String finalSso = sso;
+            String username = extractUsernameFromSso(finalSso);
+            prefs.edit()
+                .putString(KEY_TOKEN, finalSso)
+                .putString(KEY_USER, username)
+                .putString("loginuuid", loginuuid)
+                .apply();
+            Log.d("PAN", "official login captured sso-token, user=" + username);
+            handler.post(() -> {
+                if (webView != null) {
+                    String js = "window.__onOfficialLogin&&window.__onOfficialLogin("
+                        + bindJson(json(finalSso)) + "," + bindJson(json(username)) + ");";
+                    webView.evaluateJavascript(js, null);
+                }
+                closeOfficialLogin();
+            });
+        } catch (Exception e) {
+            Log.e("PAN", "capture sso-token fail: " + e);
+        }
+    }
+
+    /** 从 sso-token(JWT) 中提取 username（payload 段 base64url 解码后取 username 字段）。 */
+    private String extractUsernameFromSso(String sso) {
+        try {
+            String[] parts = sso.split("\\.");
+            if (parts.length >= 2) {
+                String payload = parts[1];
+                // base64url -> base64
+                String b64 = payload.replace('-', '+').replace('_', '/');
+                while (b64.length() % 4 != 0) b64 += "=";
+                byte[] decoded = android.util.Base64.decode(b64, android.util.Base64.DEFAULT);
+                String jsonStr = new String(decoded, java.nio.charset.StandardCharsets.UTF_8);
+                // 简单提取 username 字段
+                String key = "\"username\":\"";
+                int idx = jsonStr.indexOf(key);
+                if (idx >= 0) {
+                    int start = idx + key.length();
+                    int end = jsonStr.indexOf("\"", start);
+                    if (end > start) return jsonStr.substring(start, end);
+                }
+            }
+        } catch (Exception ignored) { }
+        return "";
+    }
+
+    /** dp 换算为 px。 */
+    private int dp(int v) {
+        return Math.round(getResources().getDisplayMetrics().density * v);
+    }
+
     // ============ JS 桥 ============
     static class NativeBridge {
         private final MainActivity act;
@@ -1407,6 +1611,18 @@ public class MainActivity extends Activity {
         @JavascriptInterface
         public void clearSession() {
             act.prefs.edit().remove(KEY_TOKEN).remove(KEY_USER).remove(KEY_PASS).apply();
+        }
+
+        // 打开官方登录覆盖层（验证码/滑块登录）；prefillPhone：可选预填手机号
+        @JavascriptInterface
+        public void openOfficialLogin(final String prefillPhone) {
+            act.openOfficialLogin(prefillPhone);
+        }
+
+        // 关闭官方登录覆盖层
+        @JavascriptInterface
+        public void closeOfficialLogin() {
+            act.closeOfficialLogin();
         }
 
         @JavascriptInterface
