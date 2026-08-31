@@ -64,14 +64,16 @@ jobs:
           path: build/*.apk
           if-no-files-found: error
 
-      # 自动发布 Release（tag 触发 / 每次构建都会发布对应 Release）
+      # 自动发布 Release：每次构建都发布到 Releases。
+      #   - tag 触发(v*)：正式版，标记为 latest
+      #   - push/main 或手动触发：dev 预发布(prerelease)，不标记 latest，避免覆盖正式版
       - name: Publish Release
-        if: ${{ startsWith(github.ref, 'refs/tags/v') }}
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.ver.outputs.release_tag }}
           files: build/*.apk
           generate_release_notes: true
-          make_latest: 'true'
+          make_latest: ${{ github.ref_type == 'tag' && 'true' || 'false' }}
+          prerelease: ${{ github.ref_type != 'tag' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
