@@ -42,7 +42,7 @@
     mkdir: 'https://api.123pan.cn/a/api/file/upload_request',        // 新建文件夹（123pan 用 upload_request 创建文件夹）
     userInfo: 'https://api.123pan.cn/b/api/user/info',
     shareCreate: 'https://api.123pan.cn/a/api/share/create',          // 创建分享（123pan 原生分享）
-    move: 'https://api.123pan.cn/a/api/file/mod_pid',                // 移动文件/文件夹到指定目录
+    move: 'https://api.123pan.cn/b/api/file/mod_pid',                // 移动文件/文件夹到指定目录
     signIn: 'https://login.123pan.com/b/api/user/sign_in',
     qrGenerate: 'https://login.123pan.com/api/user/qr-code/generate',
     qrResult: 'https://login.123pan.com/api/user/qr-code/result'
@@ -641,10 +641,11 @@
         toast('不能移动到所选文件夹的子目录'); return;
       }
     }
-    // 移动请求体：根据 123pan 协议推测 {driveId, parentFileId 目标, dragFileIdList 数组}
+    // 移动请求体：123pan 原生协议 mod_pid -> {parentFileId 目标, fileIdList:[{FileId: id}]}
     var ids = [];
-    for (var kk in state.selectedMap) ids.push(Number(state.selectedMap[kk].FileId));
-    var body = { driveId: 0, parentFileId: targetId, dragFileIdList: ids };
+    for (var kk in state.selectedMap) ids.push(Number(state.selectedMap[kk].FileId) || 0);
+    var fileIdList = ids.map(function (fid) { return { FileId: fid }; });
+    var body = { parentFileId: targetId, fileIdList: fileIdList };
     api('POST', API.move, JSON.stringify(body), true, function (d) {
       if (d && d.code === 0) {
         closeMovePicker();

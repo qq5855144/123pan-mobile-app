@@ -16,8 +16,7 @@
         android:label="123云盘"
         android:icon="@mipmap/ic_launcher"
         android:theme="@style/AppTheme"
-        android:allowBackup="true"
-        android:usesCleartextTraffic="true">
+        android:allowBackup="true">
 
         <activity
             android:name=".MainActivity"

@@ -117,7 +117,6 @@ public class MainActivity extends Activity {
         ws.setBuiltInZoomControls(true);
         ws.setDisplayZoomControls(false);
         ws.setCacheMode(WebSettings.LOAD_NO_CACHE);
-        ws.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
 
         webView.addJavascriptInterface(new NativeBridge(this), "NativeBridge");
 
@@ -974,8 +973,14 @@ public class MainActivity extends Activity {
                     Log.e("PAN", "api fail: " + method + " " + url + " -> " + e, e);
                     result = "{\"ok\":false,\"error\":\"网络异常: " + json(e.getMessage()) + "\"}";
                 }
-                Log.d("PAN", "api resp: " + method + " " + url + " -> "
-                    + (result != null && result.length() > 200 ? result.substring(0, 200) : result));
+                String logBody = result;
+                if (logBody != null) {
+                    // list 接口完整打印（供定位移动落盘），其余接口仍截断前 200
+                    boolean isList = url != null && url.contains("file/list");
+                    int cap = isList ? 8000 : 200;
+                    if (logBody.length() > cap) logBody = logBody.substring(0, cap);
+                }
+                Log.d("PAN", "api resp: " + method + " " + url + " -> " + logBody);
                 final String js = callback + "(" + result + ");";
                 handler.post(new Runnable() {
                     @Override public void run() {
@@ -1126,117 +1131,121 @@ public class MainActivity extends Activity {
                             appendUploadLog(log.toString() + "REUSED\n");
                             throw new StopUpload(msg);
                         }
-
-                        // ============ 2) 切分文件并上传分片 ============
-                        // 把文件读入内存分片（对小文件直接读全量），按 sliceSize 切分。
+                        // ============ 2) 整对象直传（官方 Web 路径，决定性修复）============
+                        // 根因（2026-08-31，Median Browser 抓包 + curl 复现确认）：
+                        // App 此前实现的是"分片上传"路径
+                        //   (upload_request -> s3_list_upload_parts 初始化 -> s3_repare_upload_parts_batch
+                        //    -> PUT(UploadPart) -> list_parts -> s3_complete_multipart_upload -> upload_complete)。
+                        // 但该分片路径在当前 123 云盘服务端仅返回 code:0（Location 空、文件不归档），
+                        // 造成"提示上传成功但文件未落盘"的经典假成功。
+                        // 官方 Web 端小文件实际走"整对象直传"路径，已实测真实落盘：
+                        //   upload_request -> s3_upload_object/auth(整对象鉴权拿预签名PUT)
+                        //   -> PUT(整对象, x-id=PutObject) -> upload_complete/v2(完成归档)
+                        // 详见 /tmp/pan_whole_123pan_cn.sh 的可复现验证。
                         byte[] all = readBytes(f);
-                        int partCount = (int) ((all.length + sliceSize - 1) / sliceSize);
-                        if (partCount < 1) partCount = 1;
-                        log.append("[2]partCount=").append(partCount).append(" per=").append(sliceSize).append("\n");
+                        log.append("[2]whole-object size=").append(all.length)
+                           .append(" key=").append(uploadKey).append(" bucket=").append(bucket).append("\n");
 
-                        for (int pi = 1; pi <= partCount; pi++) {
-                            // 2a) 获取该分片的预签名上传 URL
-                            // partNumberEnd 须为 partNumberStart+1（参考 123pan-uploader-cli），
-                            // 传相等/逆序区间会被服务端判为"非法请求"。
-                            String prepBody = "{\"bucket\":\"" + bucket
-                                + "\",\"key\":\"" + uploadKey
-                                + "\",\"partNumberEnd\":" + (pi + 1)
-                                + ",\"partNumberStart\":" + pi
-                                + ",\"uploadId\":\"" + uploadId
-                                + "\",\"StorageNode\":\"" + storageNode + "\"}";
-                            Log.d("PAN", "[2]prepare req body=" + prepBody);
-                            String prepResp = httpRequest("POST",
-                                API + "/b/api/file/s3_repare_upload_parts_batch", prepBody, true);
-                            Log.d("PAN", "[2]prepare resp=" + prepResp);
-                            log.append("[2.").append(pi).append("]prepare: ").append(prepResp).append("\n");
-                            org.json.JSONObject prepJson = new org.json.JSONObject(prepResp);
-                            if (prepJson.optInt("code", -1) != 0) {
-                                msg = "分片 " + pi + " 获取预签名地址失败: " + prepJson.optString("message");
-                                appendUploadLog(log.toString());
-                                throw new IOException(msg);
-                            }
-                            org.json.JSONObject urls = prepJson.getJSONObject("data")
-                                .getJSONObject("presignedUrls");
-                            String putUrl = urls.optString(String.valueOf(pi));
-
-                            // 2b) 计算本分片偏移与长度
-                            int start = (int) ((pi - 1) * sliceSize);
-                            int len = Math.min((int) (all.length - start), (int) sliceSize);
-                            if (len < 0) len = 0;
-
-                            // 2c) PUT 上传字节到预签名 URL（二进制直传）
-                            HttpURLConnection put = (HttpURLConnection) new URL(putUrl).openConnection();
-                            put.setConnectTimeout(30000);
-                            put.setReadTimeout(60000);
-                            put.setRequestMethod("PUT");
-                            put.setDoOutput(true);
-                            put.setFixedLengthStreamingMode(len);
-                            java.io.OutputStream pos = put.getOutputStream();
-                            pos.write(all, start, len);
-                            pos.flush();
-                            pos.close();
-                            int putCode = put.getResponseCode();
-                            log.append("[2.").append(pi).append("]PUT status=").append(putCode);
-                            java.io.InputStream pis = putCode >= 400
-                                ? put.getErrorStream() : put.getInputStream();
-                            if (pis != null) {
-                                log.append(" resp=").append(readText(pis));
-                                pis.close();
-                            }
-                            log.append("\n");
-                            if (putCode < 200 || putCode >= 300) {
-                                msg = "分片 " + pi + " 上传失败 HTTP " + putCode;
-                                appendUploadLog(log.toString());
-                                throw new IOException(msg);
-                            }
-                            Log.d("PAN", "upload part " + pi + "/" + partCount + " done (" + putCode + ")");
-                        }
-
-                        // ============ 3) 确认已上传分片 ============
-                        // 注意：s3_list_upload_parts / s3_complete_multipart_upload 的
-                        // storageNode 字段用小写（对照 123pan-uploader-cli），用大写会
-                        // 被服务端静默忽略，导致 complete 看似成功但文件未真正归档。
-                        String listPartsBody = "{\"bucket\":\"" + bucket
+                        // 2a) 整对象上传鉴权：获取该对象的预签名 PUT URL（x-id=PutObject）
+                        // 请求体精确对齐官方 Web（2026-08-31 hook 抓包权威确认）：
+                        //   {bucket,key,partNumberStart:1,partNumberEnd:2,uploadId,StorageNode}
+                        // 注：必须用小写 bucket/key/uploadId + 大写 StorageNode；
+                        // 之前用大写 {Key,Bucket,FileId,...} 虽然偶发能返回 preSigned，
+                        // 但非官方格式，故统一改为官方字段命名。
+                        String authBody = "{\"bucket\":\"" + bucket
                             + "\",\"key\":\"" + uploadKey
-                            + "\",\"uploadId\":\"" + uploadId
-                            + "\",\"storageNode\":\"" + storageNode + "\"}";
-                        Log.d("PAN", "[3]list_parts req body=" + listPartsBody);
-                        String listPartsResp = httpRequest("POST",
-                            API + "/b/api/file/s3_list_upload_parts", listPartsBody, true);
-                        Log.d("PAN", "[3]list_parts resp=" + listPartsResp);
-                        log.append("[3]list_parts: ").append(listPartsResp).append("\n");
-
-                        // ============ 4) 完成多部分上传 ============
-                        // 复刻 123pan-open 官方协议：complete 仅需 {bucket,key,uploadId,storageNode} 4 字段，
-                        // 无需带 parts 列表（OlyMarco/123pan-uploader-cli 及 curl web 实测均以此成功）。
-                        String compBody = "{\"bucket\":\"" + bucket
-                            + "\",\"key\":\"" + uploadKey
-                            + "\",\"uploadId\":\"" + uploadId
-                            + "\",\"storageNode\":\"" + storageNode + "\"}";
-                        Log.d("PAN", "[4]complete req body=" + compBody);
-                        String compResp = httpRequest("POST",
-                            API + "/b/api/file/s3_complete_multipart_upload", compBody, true);
-                        Log.d("PAN", "[4]complete resp=" + compResp);
-                        log.append("[4]complete_multipart: ").append(compResp).append("\n");
-                        org.json.JSONObject compJson = new org.json.JSONObject(compResp);
-                        if (compJson.optInt("code", -1) != 0) {
-                            msg = "完成上传失败: " + compJson.optString("message");
+                            + "\",\"partNumberStart\":1"
+                            + ",\"partNumberEnd\":2"
+                            + ",\"uploadId\":\"" + uploadId
+                            + "\",\"StorageNode\":\"" + storageNode + "\"}";
+                        Log.d("PAN", "[2]s3_upload_object/auth req body=" + authBody);
+                        String authResp = httpRequest("POST",
+                            API + "/b/api/file/s3_upload_object/auth", authBody, true);
+                        Log.d("PAN", "[2]s3_upload_object/auth resp=" + authResp);
+                        log.append("[2]s3_upload_object/auth: ").append(authResp).append("\n");
+                        org.json.JSONObject authJson = new org.json.JSONObject(authResp);
+                        if (authJson.optInt("code", -1) != 0) {
+                            msg = "整对象上传鉴权失败: " + authJson.optString("message");
                             appendUploadLog(log.toString());
                             throw new IOException(msg);
                         }
+                        org.json.JSONObject presigned = authJson.getJSONObject("data")
+                            .getJSONObject("presignedUrls");
+                        String putUrl = presigned.optString("1");
+                        if (putUrl.isEmpty()) {
+                            // 兼容 presignedUrls 只含单个键（非 "1"）的情况
+                            java.util.Iterator<String> itu = presigned.keys();
+                            while (itu.hasNext()) putUrl = presigned.optString(itu.next());
+                        }
+                        if (putUrl.isEmpty()) {
+                            msg = "整对象预签名 URL 为空";
+                            appendUploadLog(log.toString());
+                            throw new IOException(msg);
+                        }
+                        log.append("[2]presigned PUT url=").append(putUrl).append("\n");
 
-                        // ============ 5) 关闭上传会话 ============
-                        String closeBody = "{\"fileId\":" + fileId + "}";
-                        Log.d("PAN", "[5]upload_complete req body=" + closeBody);
+                        // 2b) PUT 整个对象到预签名 URL（x-id=PutObject 整对象直传）
+                        // 与官方 Web 一致：整对象一次性 PUT，request body 即文件全部字节。
+                        HttpURLConnection put = (HttpURLConnection) new URL(putUrl).openConnection();
+                        put.setConnectTimeout(30000);
+                        put.setReadTimeout(120000);
+                        put.setRequestMethod("PUT");
+                        put.setDoOutput(true);
+                        put.setFixedLengthStreamingMode(all.length);
+                        java.io.OutputStream pos = put.getOutputStream();
+                        pos.write(all);
+                        pos.flush();
+                        pos.close();
+                        int putCode = put.getResponseCode();
+                        log.append("[2]PUT(whole) status=").append(putCode);
+                        java.io.InputStream pis = putCode >= 400
+                            ? put.getErrorStream() : put.getInputStream();
+                        if (pis != null) {
+                            log.append(" resp=").append(readText(pis));
+                            pis.close();
+                        }
+                        log.append("\n");
+                        if (putCode < 200 || putCode >= 300) {
+                            msg = "整对象上传失败 HTTP " + putCode;
+                            appendUploadLog(log.toString());
+                            throw new IOException(msg);
+                        }
+                        Log.d("PAN", "upload object done (" + putCode + ")");
+
+                        // 2c) 完成归档（官方 Web 用 /v2 端点，body 精确对齐官方 hook 抓包）
+                        //   {fileId,bucket,fileSize,key,isMultipart:false,uploadId,StorageNode}
+                        // isMultipart:false 标记整对象直传（而非分片），是真正归档的关键。
+                        String closeBody = "{\"fileId\":" + fileId
+                            + ",\"bucket\":\"" + bucket
+                            + "\",\"fileSize\":" + size
+                            + ",\"key\":\"" + uploadKey
+                            + "\",\"isMultipart\":false"
+                            + ",\"uploadId\":\"" + uploadId
+                            + "\",\"StorageNode\":\"" + storageNode + "\"}";
+                        Log.d("PAN", "[3]upload_complete/v2 req body=" + closeBody);
                         String closeResp = httpRequest("POST",
-                            API + "/b/api/file/upload_complete", closeBody, true);
-                        Log.d("PAN", "[5]upload_complete resp=" + closeResp);
-                        log.append("[5]upload_complete: ").append(closeResp).append("\n");
+                            API + "/b/api/file/upload_complete/v2", closeBody, true);
+                        Log.d("PAN", "[3]upload_complete/v2 resp=" + closeResp);
+                        log.append("[3]upload_complete/v2: ").append(closeResp).append("\n");
                         org.json.JSONObject closeJson = new org.json.JSONObject(closeResp);
                         if (closeJson.optInt("code", -1) != 0) {
                             msg = "上传收尾失败: " + closeJson.optString("message");
                             appendUploadLog(log.toString());
                             throw new IOException(msg);
+                        }
+                        // 从 /v2 响应中解析最终落盘的 file_info.FileId，用于更准确的成功回执
+                        org.json.JSONObject fin = closeJson.optJSONObject("data");
+                        if (fin != null) {
+                            org.json.JSONObject fileInfo = fin.optJSONObject("file_info");
+                            if (fileInfo != null) {
+                                long realFileId = fileInfo.optLong("FileId", fileId);
+                                String realName = fileInfo.optString("FileName", fname);
+                                log.append("[3]归档 fileId=").append(realFileId)
+                                   .append(" name=").append(realName)
+                                   .append(" parent=").append(fileInfo.optLong("ParentFileId", parentFileId))
+                                   .append("\n");
+                                fileId = realFileId;
+                            }
                         }
 
                         msg = "上传成功：" + fname + "（" + (size / 1024) + "KB, fileId=" + fileId + "）";
