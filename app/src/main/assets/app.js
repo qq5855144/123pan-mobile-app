@@ -1354,6 +1354,7 @@
     renderAccountList();
     updateCacheSize();
     $('mine-version').textContent = bridge && bridge.getVersion ? bridge.getVersion() : '1.6.0';
+    refreshDebugLogToggle();
     api('GET', API.userInfo, '', true, function (d) {
       if (d && (d.data || d.Data)) {
         var u = d.data || d.Data;
@@ -1377,6 +1378,14 @@
         $('mine-quota-val').textContent = '容量获取失败';
       }
     });
+  }
+
+  // 刷新“我的”页调试日志开关显示状态
+  function refreshDebugLogToggle() {
+    var el = $('mine-debug-log-val');
+    if (!el) return;
+    var on = !!(bridge && bridge.getDebugDl && bridge.getDebugDl());
+    el.textContent = on ? '已开启' : '已关闭';
   }
 
   function doLogout() {
@@ -1784,6 +1793,14 @@
     // 清除缓存
     var clearCacheBtn = $('mine-clear-cache');
     if (clearCacheBtn) clearCacheBtn.addEventListener('click', clearCache);
+    // 下载调试日志开关（默认关闭；排障时开启会写 pan_dl_log.txt）
+    var debugLogBtn = $('mine-debug-log');
+    if (debugLogBtn) debugLogBtn.addEventListener('click', function () {
+      var on = !!(bridge && bridge.getDebugDl && bridge.getDebugDl());
+      if (bridge && bridge.setDebugDl) bridge.setDebugDl(!on);
+      refreshDebugLogToggle();
+      toast(!on ? '已开启下载调试日志（将写入 pan_dl_log.txt）' : '已关闭下载调试日志');
+    });
     // 关闭浮层/弹窗（data-close）
     document.querySelectorAll('[data-close]').forEach(function (el) {
       el.addEventListener('click', function () {

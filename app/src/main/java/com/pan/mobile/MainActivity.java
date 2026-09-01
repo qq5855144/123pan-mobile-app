@@ -687,7 +687,14 @@ public class MainActivity extends Activity {
 
     // 诊断：把下载关键事件/异常写入公共 Download 目录的日志文件，便于 shell 读取排查。
     // 用 MediaStore 写入（Android 10+ 无需写权限），保证 app 内能成功落盘到公共目录。
+    // ===== 调试日志开关 =====
+    // 默认关闭（避免在使用云盘时持续在公共 Download 目录产生 pan_dl_log.txt 文件）。
+    // 需要排障时可在“我的-调试日志”开关开启（写入 SharedPreferences debug_dl=true）。
+    private static final String PREF_DEBUG_DL = "debug_dl";
+    private boolean isDebugDlOn() { return prefs.getBoolean(PREF_DEBUG_DL, false); }
+    private void setDebugDl(boolean on) { prefs.edit().putBoolean(PREF_DEBUG_DL, on).apply(); }
     private void logDl(String msg) {
+        if (!isDebugDlOn()) return;             // 调试日志开关（默认关闭）
         java.io.OutputStream os = null;
         try {
             String line = System.currentTimeMillis() + " " + msg + "\n";
@@ -1595,6 +1602,13 @@ public class MainActivity extends Activity {
 
         @JavascriptInterface
         public String getLoginuuid() { return act.loginuuid; }
+
+        // 调试日志开关：默认关闭（避免产生 pan_dl_log.txt）。排障时可在“我的”页开启。
+        @JavascriptInterface
+        public boolean getDebugDl() { return act.isDebugDlOn(); }
+
+        @JavascriptInterface
+        public void setDebugDl(final boolean on) { act.setDebugDl(on); }
 
         @JavascriptInterface
         public long download(final String url, final String filename) {
