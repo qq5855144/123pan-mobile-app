@@ -491,9 +491,9 @@ svg { display: block; }
 .p-empty { padding: 30px; text-align: center; color: #9aa2b1; font-size: 13px; }
 
 /* ---------- 上传进度条浮层 ---------- */
-#upload-progress { position: fixed; inset: 0; z-index: 200; display: flex; align-items: center; justify-content: center; }
+#upload-progress { position: fixed; top: 0; left: 0; right: 0; bottom: 0; z-index: 200; display: flex; align-items: center; justify-content: center; }
 #upload-progress.hidden { display: none; }
-#upload-progress .up-mask { position: absolute; inset: 0; background: rgba(0,0,0,0.35); }
+#upload-progress .up-mask { position: absolute; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.35); }
 #upload-progress .up-panel {
   position: relative; width: 82%; max-width: 340px; background: #fff; border-radius: 16px;
   padding: 20px 18px; box-shadow: 0 10px 30px rgba(0,0,0,0.18);

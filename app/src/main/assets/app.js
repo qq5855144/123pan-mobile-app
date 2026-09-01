@@ -5,6 +5,87 @@
 (function () {
   'use strict';
 
+  // ===== 兼容性补丁（兼容 Android 8 等旧 WebView，避免冷启动白屏）=====
+  // 老旧系统 WebView 可能缺失下述 ES6+/DOM 方法，这里用 ES5 安全补齐。
+  // 缺失任一都会导致 app.js 初始化中途抛错，页面不渲染而成白屏。
+  (function () {
+    // 1) NodeList.forEach：代码在多处依赖（如 querySelectorAll(...).forEach）
+    try {
+      if (window.NodeList && !NodeList.prototype.forEach) {
+        NodeList.prototype.forEach = Array.prototype.forEach;
+      }
+    } catch (e) {}
+    // 2) Array.prototype.includes
+    try {
+      if (!Array.prototype.includes) {
+        Array.prototype.includes = function (v) {
+          for (var i = 0; i < this.length; i++) { if (this[i] === v) return true; }
+          return false;
+        };
+      }
+    } catch (e) {}
+    // 3) String.prototype.includes / startsWith / endsWith / trim
+    try {
+      if (!String.prototype.includes) {
+        String.prototype.includes = function (s, pos) {
+          return this.indexOf(s, pos || 0) !== -1;
+        };
+      }
+      if (!String.prototype.startsWith) {
+        String.prototype.startsWith = function (s, pos) {
+          return this.slice(pos || 0, (pos || 0) + s.length) === s;
+        };
+      }
+      if (!String.prototype.endsWith) {
+        String.prototype.endsWith = function (s) {
+          return this.indexOf(s, this.length - s.length) !== -1;
+        };
+      }
+      if (!String.prototype.trim) {
+        String.prototype.trim = function () { return this.replace(/^\s+|\s+$/g, ''); };
+      }
+    } catch (e) {}
+    // 4) Element.prototype.closest
+    try {
+      if (window.Element && !Element.prototype.closest) {
+        Element.prototype.closest = function (sel) {
+          var el = this;
+          while (el && el !== document) {
+            if (el.matches && el.matches(sel)) return el;
+            el = el.parentElement;
+          }
+          return null;
+        };
+      }
+    } catch (e) {}
+    // 5) Object.entries / Object.values
+    try {
+      if (!Object.entries) {
+        Object.entries = function (o) {
+          var out = [], k;
+          for (k in o) { if (Object.prototype.hasOwnProperty.call(o, k)) out.push([k, o[k]]); }
+          return out;
+        };
+      }
+      if (!Object.values) {
+        Object.values = function (o) {
+          var out = [], k;
+          for (k in o) { if (Object.prototype.hasOwnProperty.call(o, k)) out.push(o[k]); }
+          return out;
+        };
+      }
+    } catch (e) {}
+    // 6) Array.prototype.find（若用到）
+    try {
+      if (!Array.prototype.find) {
+        Array.prototype.find = function (fn) {
+          for (var i = 0; i < this.length; i++) { if (fn(this[i], i, this)) return this[i]; }
+          return undefined;
+        };
+      }
+    } catch (e) {}
+  })();
+
   var bridge = window.NativeBridge;
   var _currentList = [];   // 当前文件列表项（多选 toggle 时按 FileId 精准刷新用）
   var state = {
