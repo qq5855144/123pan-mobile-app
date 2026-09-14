@@ -2158,10 +2158,77 @@ public class MainActivity extends Activity {
         }
 
         @JavascriptInterface
-        public String getVersion() { return "1.7.0"; }
+        public String getVersion() { return currentVersionName(act); }
 
         @JavascriptInterface
         public String getLoginuuid() { return act.loginuuid; }
+
+        //自动更新：后台拉取 GitHub 最新 Release 信息，经 __onUpdateCheck 回传前端
+        @JavascriptInterface
+        public void checkUpdate() {
+          final MainActivity a = act;
+          new Thread(new Runnable() {
+            @Override public void run() {
+              String result = null;
+              try {
+                java.net.HttpURLConnection conn = (java.net.HttpURLConnection) new java.net.URL(
+                    "https://api.github.com/repos/qq5855144/123pan-mobile-app/releases/latest").openConnection();
+                conn.setConnectTimeout(10000);
+                conn.setReadTimeout(15000);
+                conn.setRequestProperty("Accept", "application/vnd.github+json");
+                conn.setRequestProperty("User-Agent", "123pan-mobile-app");
+                int code = conn.getResponseCode();
+                if (code != 200) throw new RuntimeException("HTTP " + code);
+                java.io.InputStream is = conn.getInputStream();
+                java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream();
+                byte[] buf = new byte[8192];
+                int n;
+                while ((n = is.read(buf)) > 0) bo.write(buf, 0, n);
+                is.close();
+                conn.disconnect();
+                org.json.JSONObject rel = new org.json.JSONObject(bo.toString("UTF-8"));
+                org.json.JSONObject out = new org.json.JSONObject();
+                out.put("ok", true);
+                out.put("tag", rel.optString("tag_name", ""));
+                out.put("name", rel.optString("name", ""));
+                out.put("current", currentVersionName(a));
+                String url = "";
+                org.json.JSONArray assets = rel.optJSONArray("assets");
+                if (assets != null && assets.length() > 0) {
+                  url = assets.getJSONObject(0).optString("browser_download_url", "");
+                }
+                out.put("url", url);
+                result = out.toString();
+              } catch (Exception e) {
+                try {
+                  org.json.JSONObject err = new org.json.JSONObject();
+                  err.put("ok", false);
+                  err.put("message", e.getMessage() == null ? "network error" : e.getMessage());
+                  result = err.toString();
+                } catch (Exception e2) {
+                  result = "{}";
+                }
+              }
+              final String js = "window.__onUpdateCheck && window.__onUpdateCheck(" + result + ");";
+              a.handler.post(new Runnable() {
+                @Override public void run() {
+                  if (a.webView != null) a.webView.evaluateJavascript(js, null);
+                }
+              });
+            }
+          }).start();
+        }
+        
+        //读取当前安装包版本名（versionName），供自动更新比对
+        private String currentVersionName(MainActivity a) {
+          try {
+            android.content.pm.PackageInfo pi = a.getPackageManager().getPackageInfo(a.getPackageName(), 0);
+            return pi.versionName == null ? "1.0.0" : pi.versionName;
+          } catch (Exception e) {
+            return "1.0.0";
+          }
+        }
+
 
         @JavascriptInterface
         public long download(final String url, final String filename) {

@@ -211,6 +211,20 @@ svg { display: block; }
 .mine-label { display: flex; align-items: center; gap: 8px; }
 .mi-icon { width: 18px; height: 18px; color: #2B6DE8; }
 .mine-val { color: #6b7280; font-size: 13px; }
+
+/*自动更新开关（我的页） */
+.ui-switch {
+  position: relative; width: 46px; height: 26px; border-radius: 13px;
+  background: #d8dde6; transition: background .18s ease; flex: none;
+}
+.ui-switch::after {
+  content: ''; position: absolute; top: 3px; left: 3px; width: 20px; height: 20px;
+  border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.18);
+  transition: left .18s ease;
+}
+.ui-switch.on { background: #2B6DE8; }
+.ui-switch.on::after { left: 23px; }
+
 .btn-danger {
   width: 100%; height: 46px; border-radius: 12px; background: #fff; color: #e5484d;
   font-size: 15px; font-weight: 600; border: 1px solid #fde3e3; margin-top: 6px;

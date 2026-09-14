@@ -108,6 +108,8 @@
     transfers: loadTransfers(), // 下载任务列表 [{name,size,status,time}]
     upQueue: loadUpQueue(),       // 上传任务队列（串行调度 [{name,path,status,done,total}]）
     transferTab: (function () { try { return localStorage.getItem('pan_ttab') === 'upload' ? 'upload' : 'download'; } catch (e) { return 'download'; } })(), // 传输页子页签：download/upload
+    autoUpdate: (function () { try { return localStorage.getItem('pan_autoupdate') !== '0'; } catch (e) { return true; } })(), //自动更新开关（默认开启）
+    updateInfo: null, //待下载的新版本信息 {version, url}
     progTimer: null,          // 下载进度轮询定时器
     searching: false,         // 是否处于全局搜索态
     searchKeyword: '',        // 当前搜索关键词
@@ -229,7 +231,8 @@
     plus: '<path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
     check: '<path d="M20 6L9 17l-5-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
     sort: '<path d="M3 6h12M3 12h9M3 18h6M17 4v12M14 13l3 3 3-3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
-    link: '<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>'
+    link: '<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
+    refresh: '<path d="M2112a99011-9-9c2.5204.9316.742.74L218" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M213v5h-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>'
   };
   function applySvg(el, name) {
     var inner = ICON_SVG[name];
@@ -2140,11 +2143,101 @@
       }
     });
   }
+  // ---------- 自动更新 ----------
+  function renderAutoUpdate() {
+    var el = $('upd-switch');
+    if (el) el.classList.toggle('on', !!state.autoUpdate);
+  }
+  //版本号归一化：dev-47 → 1.0.47；无法识别时原样返回
+  function normVer(s) {
+    s = String(s || '').trim();
+    var m = s.match(/^dev-([0-9]+)$/);
+    return m ? ('1.0.' + m[1]) : s;
+  }
+  //版本比较：a>b返回1；相等0；a<b返回-1
+  function cmpVer(a, b) {
+    var pa = String(a || '').match(/[0-9]+/g) || [];
+    var pb = String(b || '').match(/[0-9]+/g) || [];
+    var n = Math.max(pa.length, pb.length);
+    for (var i = 0; i < n; i++) {
+      var x = parseInt(pa[i] || '0', 10);
+      var y = parseInt(pb[i] || '0', 10);
+      if (x !== y) return x > y ? 1 : -1;
+    }
+    return 0;
+  }
+  var _upChecking = false; //检查请求进行中（防重入）
+  var _upManual = false;   //本次是否手动检查（手动检查结束会有提示反馈）
+  var _upTimer = null;     //安全兜底定时器
+  function checkAppUpdate(manual) {
+    if (_upChecking) return;
+    if (!bridge || !bridge.checkUpdate) return;
+    _upChecking = true;
+    _upManual = !!manual;
+    if (manual) toast('正在检查更新...');
+    if (_upTimer) clearTimeout(_upTimer);
+    _upTimer = setTimeout(function () { _upChecking = false; }, 20000);
+    try { bridge.checkUpdate(); } catch (e) { _upChecking = false; if (manual) toast('检查更新失败'); }
+  }
+  function onToggleAutoUpdate() {
+    state.autoUpdate = !state.autoUpdate;
+    try { localStorage.setItem('pan_autoupdate', state.autoUpdate ? '1' : '0'); } catch (e) {}
+    renderAutoUpdate();
+    toast(state.autoUpdate ? '自动更新已开启' : '自动更新已关闭');
+    if (state.autoUpdate) checkAppUpdate(true);
+  }
+  //更新弹窗：点下载按钮
+  function onUpdGo() {
+    hide($('update-modal'));
+    var info = state.updateInfo || {};
+    state.updateInfo = null;
+    if (!info.url) { toast('未找到安装包下载地址，可前往 Releases 页手动下载'); return; }
+    var fname = '123pan-mobile-' + (info.version || 'new') + '.apk';
+    try {
+      var id = bridge && bridge.download ? bridge.download(info.url, fname) : 0;
+      if (Number(id) > 0) toast('下载完成后可到传输页打开安装');
+    } catch (e) {
+      toast('下载失败：' + (e && e.message ? e.message : e));
+    }
+  }
+  //原生回调：GitHub 最新 Release 信息
+  window.__onUpdateCheck = function (info) {
+    _upChecking = false;
+    if (_upTimer) { clearTimeout(_upTimer); _upTimer = null; }
+    var manual = _upManual;
+    _upManual = false;
+    if (!info || !info.ok) {
+      if (manual) toast('检查更新失败，请稍后重试');
+      return;
+    }
+    var cur = info.current || '';
+    var cands = [];
+    if (info.name && /[0-9]/.test(info.name)) cands.push(info.name);
+    var nt = normVer(info.tag);
+    if (nt && /[0-9]/.test(nt)) cands.push(nt);
+    var latest = '';
+    for (var i = 0; i < cands.length; i++) {
+      if (!latest || cmpVer(cands[i], latest) > 0) latest = cands[i];
+    }
+    if (!latest || !cur || cmpVer(latest, cur) <= 0) {
+      if (manual) toast('当前已是最新版本 v' + cur);
+      return;
+    }
+    if (!state.autoUpdate && !manual) return; //启动检查时开关已被关闭：不打扰
+    state.updateInfo = { version: latest, url: info.url || '' };
+    $('upd-message').textContent = '发现新版本 v' + latest + '（当前 v' + cur + '），是否下载安装包？';
+    show($('update-modal'));
+  };
+  //启动后自动检查（每次进入软件时；受「我的-自动更新」开关控制）
+  function scheduleUpdateBoot() {
+    setTimeout(function () { if (state.autoUpdate) checkAppUpdate(false); }, 1800);
+  }
+
   // ---------- 我的页 ----------
   function loadMine() {
     renderAccountList();
     updateCacheSize();
-    $('mine-version').textContent = bridge && bridge.getVersion ? bridge.getVersion() : '1.6.0';
+    renderAutoUpdate();
     api('GET', API.userInfo, '', true, function (d) {
       if (d && (d.data || d.Data)) {
         var u = d.data || d.Data;
@@ -2503,6 +2596,9 @@
     $('rename-ok').addEventListener('click', doRename);
     // 自定义确认弹窗：点"确定"执行回调
     $('cf-ok').addEventListener('click', onCfOk);
+    //自动更新开关与下载按钮绑定
+    $('mine-autoupdate').addEventListener('click', onToggleAutoUpdate);
+    $('upd-go').addEventListener('click', onUpdGo);
     // 新建文件夹
     $('tool-newfolder').addEventListener('click', function () {
       $('newfolder-input').value = '';
@@ -2641,8 +2737,9 @@
   }
 
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', init);
+    document.addEventListener('DOMContentLoaded', function () { init(); scheduleUpdateBoot(); });
   } else {
     init();
+    scheduleUpdateBoot();
   }
 })();

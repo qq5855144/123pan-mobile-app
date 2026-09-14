@@ -102,7 +102,7 @@
         <div class="mine-section-title">通用</div>
         <div class="mine-item" id="mine-quota"><span class="mine-label"><span class="mi-icon" data-icon="hdd"></span>存储空间</span><span class="mine-val" id="mine-quota-val">-</span></div>
         <div class="mine-item mine-item-btn" id="mine-clear-cache"><span class="mine-label"><span class="mi-icon" data-icon="broom"></span>清除缓存</span><span class="mine-val" id="mine-cache-size">0 B</span><span class="mine-arrow">›</span></div>
-        <div class="mine-item"><span class="mine-label"><span class="mi-icon" data-icon="info"></span>应用版本</span><span class="mine-val" id="mine-version">-</span></div>
+        <div class="mine-item mine-item-btn" id="mine-autoupdate"><span class="mine-label"><span class="mi-icon" data-icon="refresh"></span>自动更新</span><span class="ui-switch" id="upd-switch"></span></div>
 
         <button id="logout-btn" class="btn-danger">退出当前账号</button>
       </section>
@@ -150,6 +150,19 @@
     <div class="modal-btns">
       <button class="btn-plain" data-close>取消</button>
       <button id="cf-ok" class="btn-primary danger">确定</button>
+    </div>
+  </div>
+</div>
+
+<!--自动更新提示弹窗 -->
+<div id="update-modal" class="modal hidden">
+  <div class="modal-mask" data-close></div>
+  <div class="modal-panel">
+    <div class="modal-title" id="upd-title">发现新版本</div>
+    <div class="cf-message" id="upd-message"></div>
+    <div class="modal-btns">
+      <button class="btn-plain" data-close>取消</button>
+      <button id="upd-go" class="btn-primary">下载</button>
     </div>
   </div>
 </div>
