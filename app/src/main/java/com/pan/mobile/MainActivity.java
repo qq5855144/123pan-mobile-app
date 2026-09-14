@@ -132,6 +132,8 @@ public class MainActivity extends Activity {
         ws.setDatabaseEnabled(true);
         ws.setAllowFileAccess(true);
         ws.setAllowContentAccess(true);
+        // file:// 页面允许跨源访问（本地预览代理 http://127.0.0.1 需要）
+        ws.setAllowUniversalAccessFromFileURLs(true);
         ws.setUseWideViewPort(true);
         ws.setLoadWithOverviewMode(true);
         ws.setSupportZoom(false);
@@ -1204,6 +1206,10 @@ public class MainActivity extends Activity {
     @Override
     protected void onDestroy() {
         if (webView != null) webView.destroy();
+        if (previewSocket != null) {
+            try { previewSocket.close(); } catch (Exception ignore) {}
+            previewSocket = null;
+        }
         executor.shutdown();
         super.onDestroy();
     }
@@ -1291,6 +1297,378 @@ public class MainActivity extends Activity {
         conn.disconnect();
         return sb.toString();
     }
+
+    // ============ 本地预览代理 ============
+    // 背景：WebView 的 <img>/<audio>/<video>/pdf.js 无法携带认证头直连 123pan CDN 直链，
+    // 这里在本机 127.0.0.1 上开一个随机端口的小型转发服务：
+    //   - JS 侧用 bridge.getPreviewUrl(直链) 换取本地代理 URL；
+    //   - 代理按原始直链做多级解析（resolveRealDownloadUrl），带全套认证头请求真实 CDN，
+    //     并透传 Range / 206，从而支持音视频拖动与 pdf.js 分段加载。
+    private java.net.ServerSocket previewSocket;
+    private int previewPort = 0;
+    private String previewKey = "";
+    private final java.util.Map<String, String> previewResolvedCache =
+        new java.util.concurrent.ConcurrentHashMap<>();
+
+    private synchronized boolean ensurePreviewProxy() {
+        if (previewSocket != null && !previewSocket.isClosed() && previewPort > 0) return true;
+        try {
+            java.net.ServerSocket ss = new java.net.ServerSocket(
+                0, 24, java.net.InetAddress.getByName("127.0.0.1"));
+            previewSocket = ss;
+            previewPort = ss.getLocalPort();
+            previewKey = UUID.randomUUID().toString().replace("-", "");
+            Thread t = new Thread(new Runnable() {
+                @Override public void run() {
+                    while (true) {
+                        try {
+                            final java.net.Socket s = previewSocket.accept();
+                            Thread ct = new Thread(new Runnable() {
+                                @Override public void run() { handlePreviewConn(s); }
+                            });
+                            ct.setDaemon(true);
+                            ct.start();
+                        } catch (Exception e) {
+                            break; // socket 关闭或致命错误：退出接受循环
+                        }
+                    }
+                }
+            });
+            t.setDaemon(true);
+            t.start();
+            Log.d("PAN", "preview proxy started on 127.0.0.1:" + previewPort);
+            return true;
+        } catch (Exception e) {
+            Log.e("PAN", "preview proxy start fail: " + e, e);
+            previewSocket = null;
+            previewPort = 0;
+            previewKey = "";
+            return false;
+        }
+    }
+
+    /** 供 JS 桥调用：把下载直链包装成本地代理 URL（失败返回空串）。 */
+    public String getPreviewUrl(String url) {
+        if (url == null || url.isEmpty()) return "";
+        if (!(url.startsWith("http://") || url.startsWith("https://"))) return "";
+        if (!ensurePreviewProxy()) return "";
+        try {
+            return "http://127.0.0.1:" + previewPort + "/p/" + previewKey + "?u="
+                + URLEncoder.encode(url, "UTF-8");
+        } catch (Exception e) {
+            return "";
+        }
+    }
+
+    /** 解析（带缓存）：把 download-v2 中转等解析为最终 CDN 直链。 */
+    private String resolvePreviewTarget(String url) {
+        String real = previewResolvedCache.get(url);
+        if (real != null && !real.isEmpty()) return real;
+        real = resolveRealDownloadUrl(url, "preview");
+        if (real != null && !real.isEmpty()) previewResolvedCache.put(url, real);
+        return real;
+    }
+
+    /** 处理一个本地代理连接：解析请求 -> 解析直链 -> 带认证头转发 -> 透传状态/响应头/字节流。 */
+    private void handlePreviewConn(java.net.Socket s) {
+        java.io.OutputStream out = null;
+        HttpURLConnection upstream = null;
+        try {
+            s.setSoTimeout(30000);
+            java.io.InputStream sin = s.getInputStream();
+            out = s.getOutputStream();
+            java.io.BufferedReader r = new java.io.BufferedReader(
+                new java.io.InputStreamReader(sin, "ISO-8859-1"));
+            String reqLine = r.readLine();
+            if (reqLine == null) return;
+            String[] parts = reqLine.split(" ");
+            String method = parts.length >= 1 ? parts[0] : "";
+            String path = parts.length >= 2 ? parts[1] : "";
+            String range = null;
+            String line;
+            int hn = 0;
+            while ((line = r.readLine()) != null && !line.isEmpty() && hn++ < 60) {
+                int c = line.indexOf(':');
+                if (c > 0 && "range".equalsIgnoreCase(line.substring(0, c).trim())) {
+                    range = line.substring(c + 1).trim();
+                }
+            }
+            int qIdx = path.indexOf('?');
+            String p0 = qIdx >= 0 ? path.substring(0, qIdx) : path;
+            String query = qIdx >= 0 ? path.substring(qIdx + 1) : "";
+            if (!p0.equals("/p/" + previewKey)) {
+                writePreviewErr(out, 403, "forbidden");
+                return;
+            }
+            String target = "";
+            if (query.startsWith("u=")) {
+                target = java.net.URLDecoder.decode(query.substring(2), "UTF-8");
+            }
+            if (!(target.startsWith("http://") || target.startsWith("https://"))) {
+                writePreviewErr(out, 400, "bad target");
+                return;
+            }
+            String real = resolvePreviewTarget(target);
+            if (real == null || real.isEmpty()) {
+                writePreviewErr(out, 502, "resolve failed");
+                return;
+            }
+            upstream = (HttpURLConnection) new URL(real).openConnection();
+            upstream.setConnectTimeout(20000);
+            upstream.setReadTimeout(120000);
+            upstream.setRequestMethod("GET");
+            upstream.setInstanceFollowRedirects(true);
+            upstream.setRequestProperty("Accept-Encoding", "identity");
+            String token = prefs.getString(KEY_TOKEN, "");
+            upstream.setRequestProperty("user-agent", "123pan/v2.4.0(" + osVersion + ";Xiaomi)");
+            upstream.setRequestProperty("authorization", token.isEmpty() ? "" : "Bearer " + token);
+            upstream.setRequestProperty("osversion", osVersion);
+            upstream.setRequestProperty("platform", "web");
+            upstream.setRequestProperty("devicetype", deviceType);
+            upstream.setRequestProperty("devicename", devicename);
+            upstream.setRequestProperty("app-version", "61");
+            upstream.setRequestProperty("x-app-version", "2.4.0");
+            upstream.setRequestProperty("Origin", "https://yun.123pan.cn");
+            upstream.setRequestProperty("Referer", "https://yun.123pan.cn/");
+            if (range != null && !range.isEmpty()) {
+                upstream.setRequestProperty("Range", range);
+            }
+            int code = upstream.getResponseCode();
+            if (code >= 400) {
+                Log.w("PAN", "preview upstream HTTP " + code + " for " + real);
+                writePreviewErr(out, 502, "upstream HTTP " + code);
+                return;
+            }
+            boolean is206 = code == 206;
+            String ctype = upstream.getContentType();
+            if (ctype == null || ctype.isEmpty()
+                || ctype.toLowerCase().startsWith("application/octet-stream")) {
+                ctype = guessPreviewType(real);
+            }
+            StringBuilder head = new StringBuilder();
+            head.append("HTTP/1.1 ").append(is206 ? "206 Partial Content"
+                : (code == 200 ? "200 OK" : code + " OK")).append("\r\n");
+            head.append("Content-Type: ").append(ctype).append("\r\n");
+            String cr = upstream.getHeaderField("Content-Range");
+            if (cr != null) head.append("Content-Range: ").append(cr).append("\r\n");
+            String cl = upstream.getHeaderField("Content-Length");
+            if (cl != null) head.append("Content-Length: ").append(cl).append("\r\n");
+            head.append("Accept-Ranges: bytes\r\n");
+            head.append("Access-Control-Allow-Origin: *\r\n");
+            head.append("Access-Control-Expose-Headers: Content-Range, Content-Length, Accept-Ranges\r\n");
+            head.append("Cache-Control: no-store\r\n");
+            head.append("Connection: close\r\n\r\n");
+            out.write(head.toString().getBytes("ISO-8859-1"));
+            if (!"HEAD".equalsIgnoreCase(method)) {
+                InputStream uin = upstream.getInputStream();
+                byte[] buf = new byte[65536];
+                int n;
+                while ((n = uin.read(buf)) > 0) {
+                    out.write(buf, 0, n);
+                }
+                uin.close();
+            }
+            out.flush();
+        } catch (Exception e) {
+            // 播放器拖动/关闭时主动断开属正常现象，仅记录
+            Log.d("PAN", "preview conn end: " + e);
+        } finally {
+            try { if (upstream != null) upstream.disconnect(); } catch (Exception ignore) {}
+            try { if (out != null) out.close(); } catch (Exception ignore) {}
+            try { s.close(); } catch (Exception ignore) {}
+        }
+    }
+
+    /** 代理错误响应（小体积文本）。 */
+    private void writePreviewErr(java.io.OutputStream out, int code, String msg) {
+        try {
+            byte[] b = ("preview proxy error: " + msg).getBytes("UTF-8");
+            String h = "HTTP/1.1 " + code + " Error\r\n"
+                + "Content-Type: text/plain; charset=utf-8\r\n"
+                + "Content-Length: " + b.length + "\r\n"
+                + "Cache-Control: no-store\r\n"
+                + "Connection: close\r\n\r\n";
+            out.write(h.getBytes("ISO-8859-1"));
+            out.write(b);
+            out.flush();
+        } catch (Exception ignore) {}
+    }
+
+    /** 依据扩展名猜测 Content-Type（CDN 返回 octet-stream 或缺失时兜底）。 */
+    private String guessPreviewType(String url) {
+        String u = url == null ? "" : url.toLowerCase();
+        int q = u.indexOf('?');
+        if (q >= 0) u = u.substring(0, q);
+        if (u.endsWith(".jpg") || u.endsWith(".jpeg")) return "image/jpeg";
+        if (u.endsWith(".png")) return "image/png";
+        if (u.endsWith(".gif")) return "image/gif";
+        if (u.endsWith(".webp")) return "image/webp";
+        if (u.endsWith(".bmp")) return "image/bmp";
+        if (u.endsWith(".svg")) return "image/svg+xml";
+        if (u.endsWith(".mp3")) return "audio/mpeg";
+        if (u.endsWith(".m4a")) return "audio/mp4";
+        if (u.endsWith(".wav")) return "audio/wav";
+        if (u.endsWith(".flac")) return "audio/flac";
+        if (u.endsWith(".aac")) return "audio/aac";
+        if (u.endsWith(".ogg") || u.endsWith(".opus")) return "audio/ogg";
+        if (u.endsWith(".mp4") || u.endsWith(".m4v")) return "video/mp4";
+        if (u.endsWith(".webm")) return "video/webm";
+        if (u.endsWith(".mov")) return "video/quicktime";
+        if (u.endsWith(".mkv")) return "video/x-matroska";
+        if (u.endsWith(".pdf")) return "application/pdf";
+        if (u.endsWith(".txt")) return "text/plain; charset=utf-8";
+        return "application/octet-stream";
+    }
+
+    /** 文本预览：原生拉取（带认证头），经 __onFetchText 回传（保留换行，超 1MB 截断）。 */
+    public void fetchPreviewText(final String url) {
+        final MainActivity act = this;
+        new Thread(new Runnable() {
+            @Override public void run() {
+                boolean ok = false;
+                String text = "";
+                try {
+                    String real = resolvePreviewTarget(url);
+                    if (real == null || real.isEmpty()) throw new RuntimeException("resolve failed");
+                    HttpURLConnection conn = (HttpURLConnection) new URL(real).openConnection();
+                    conn.setConnectTimeout(15000);
+                    conn.setReadTimeout(30000);
+                    conn.setRequestMethod("GET");
+                    conn.setInstanceFollowRedirects(true);
+                    conn.setRequestProperty("Accept-Encoding", "identity");
+                    String token = prefs.getString(KEY_TOKEN, "");
+                    conn.setRequestProperty("user-agent", "123pan/v2.4.0(" + osVersion + ";Xiaomi)");
+                    conn.setRequestProperty("authorization", token.isEmpty() ? "" : "Bearer " + token);
+                    conn.setRequestProperty("osversion", osVersion);
+                    conn.setRequestProperty("platform", "web");
+                    conn.setRequestProperty("devicetype", deviceType);
+                    conn.setRequestProperty("devicename", devicename);
+                    conn.setRequestProperty("app-version", "61");
+                    conn.setRequestProperty("x-app-version", "2.4.0");
+                    conn.setRequestProperty("Origin", "https://yun.123pan.cn");
+                    conn.setRequestProperty("Referer", "https://yun.123pan.cn/");
+                    int code = conn.getResponseCode();
+                    if (code < 200 || code >= 400) throw new RuntimeException("HTTP " + code);
+                    InputStream is = wrapMaybeGzip(conn, conn.getInputStream());
+                    final int LIMIT = 1024 * 1024;
+                    java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream();
+                    byte[] buf = new byte[16384];
+                    int n;
+                    int total = 0;
+                    boolean truncated = false;
+                    while ((n = is.read(buf)) > 0) {
+                        int w = Math.min(n, LIMIT - total);
+                        if (w > 0) bo.write(buf, 0, w);
+                        total += w;
+                        if (total >= LIMIT) {
+                            // 再读一个字节判断是否还有剩余
+                            if (is.read() >= 0) truncated = true;
+                            break;
+                        }
+                    }
+                    is.close();
+                    conn.disconnect();
+                    text = new String(bo.toByteArray(), "UTF-8");
+                    if (truncated) text += "\n\n……（内容过大，仅显示前 1 MB）";
+                    ok = true;
+                } catch (Exception e) {
+                    ok = false;
+                    text = "";
+                    Log.w("PAN", "fetchPreviewText fail: " + e);
+                }
+                final boolean fok = ok;
+                final String ftxt = text;
+                final String js = "window.__onFetchText && window.__onFetchText("
+                    + org.json.JSONObject.quote(url) + "," + fok + ","
+                    + org.json.JSONObject.quote(ftxt) + ");";
+                act.handler.post(new Runnable() {
+                    @Override public void run() {
+                        if (act.webView != null) act.webView.evaluateJavascript(js, null);
+                    }
+                });
+            }
+        }).start();
+    }
+
+    /** 字节预览（Word/Excel/PDF 兼容模式）：原生拉取，Base64 经 __onFetchBytes 回传（上限 24MB）。 */
+    public void fetchPreviewBytes(final String url) {
+        final MainActivity act = this;
+        new Thread(new Runnable() {
+            @Override public void run() {
+                boolean ok = false;
+                String b64 = "";
+                String msg = "";
+                try {
+                    String real = resolvePreviewTarget(url);
+                    if (real == null || real.isEmpty()) throw new RuntimeException("获取直链失败");
+                    HttpURLConnection conn = (HttpURLConnection) new URL(real).openConnection();
+                    conn.setConnectTimeout(15000);
+                    conn.setReadTimeout(60000);
+                    conn.setRequestMethod("GET");
+                    conn.setInstanceFollowRedirects(true);
+                    conn.setRequestProperty("Accept-Encoding", "identity");
+                    String token = prefs.getString(KEY_TOKEN, "");
+                    conn.setRequestProperty("user-agent", "123pan/v2.4.0(" + osVersion + ";Xiaomi)");
+                    conn.setRequestProperty("authorization", token.isEmpty() ? "" : "Bearer " + token);
+                    conn.setRequestProperty("osversion", osVersion);
+                    conn.setRequestProperty("platform", "web");
+                    conn.setRequestProperty("devicetype", deviceType);
+                    conn.setRequestProperty("devicename", devicename);
+                    conn.setRequestProperty("app-version", "61");
+                    conn.setRequestProperty("x-app-version", "2.4.0");
+                    conn.setRequestProperty("Origin", "https://yun.123pan.cn");
+                    conn.setRequestProperty("Referer", "https://yun.123pan.cn/");
+                    int code = conn.getResponseCode();
+                    if (code < 200 || code >= 400) throw new RuntimeException("HTTP " + code);
+                    InputStream is = wrapMaybeGzip(conn, conn.getInputStream());
+                    final int LIMIT = 24 * 1024 * 1024;
+                    java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream();
+                    byte[] buf = new byte[65536];
+                    int n;
+                    int total = 0;
+                    boolean over = false;
+                    while ((n = is.read(buf)) > 0) {
+                        if (total + n > LIMIT) { over = true; break; }
+                        bo.write(buf, 0, n);
+                        total += n;
+                    }
+                    is.close();
+                    conn.disconnect();
+                    if (over) throw new RuntimeException("文件过大（超过 24 MB），请下载后查看");
+                    b64 = android.util.Base64.encodeToString(bo.toByteArray(), android.util.Base64.NO_WRAP);
+                    ok = true;
+                } catch (Exception e) {
+                    ok = false;
+                    msg = e.getMessage() == null ? "加载失败" : e.getMessage();
+                    Log.w("PAN", "fetchPreviewBytes fail: " + e);
+                }
+                final boolean fok = ok;
+                final String fb64 = b64;
+                final String fmsg = msg;
+                final String js = "window.__onFetchBytes && window.__onFetchBytes("
+                    + org.json.JSONObject.quote(url) + "," + fok + ","
+                    + org.json.JSONObject.quote(fb64) + ","
+                    + org.json.JSONObject.quote(fmsg) + ");";
+                act.handler.post(new Runnable() {
+                    @Override public void run() {
+                        if (act.webView != null) act.webView.evaluateJavascript(js, null);
+                    }
+                });
+            }
+        }).start();
+    }
+
+    /** 若服务端仍返回 gzip，则包装解压流（请求头已声明 identity）。 */
+    private static InputStream wrapMaybeGzip(HttpURLConnection c, InputStream is) {
+        try {
+            String enc = c.getContentEncoding();
+            if (enc != null && enc.toLowerCase().contains("gzip")) {
+                return new GZIPInputStream(is);
+            }
+        } catch (Exception ignore) {}
+        return is;
+    }
+
 
     // ============ 上传 ============
     /** 计算文件 MD5（123pan 的 etag 用） */
@@ -2298,5 +2676,14 @@ public class MainActivity extends Activity {
 
         @JavascriptInterface
         public void clearCache() { act.clearAppCache(); }
+
+        // 文件预览：本地媒体/PDF 代理 URL（带认证头转发直链、支持 Range）
+        @JavascriptInterface public String getPreviewUrl(String url) { return act.getPreviewUrl(url); }
+
+        // 文件预览：文本拉取（带认证头；经 window.__onFetchText 回调，超 1MB 截断）
+        @JavascriptInterface public void fetchText(final String url) { act.fetchPreviewText(url); }
+
+        // 文件预览：整文件字节拉取（Word/Excel/PDF 兼容模式；经 window.__onFetchBytes 回调，Base64，上限 24MB）
+        @JavascriptInterface public void fetchBytes(final String url) { act.fetchPreviewBytes(url); }
     }
 }

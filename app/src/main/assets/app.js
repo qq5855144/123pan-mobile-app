@@ -1177,7 +1177,7 @@
     grid.innerHTML = '';
     // 点击菜单项按类型区分：
     //   - 文件夹 (Type===1)：打开 / 分享 / 重命名 / 删除
-    //   - 文件   (Type!==1)：下载 / 分享 / 重命名 / 删除
+    //   - 文件   (Type!==1)：预览 / 下载 / 分享 / 重命名 / 删除
     var isDir = item.Type === 1;
     var items;
     if (isDir) {
@@ -1189,7 +1189,8 @@
       ];
     } else {
       items = [
-        { icon: 'download', label: '下载', cls: 'primary', fn: function () { closeSheet(); doDownload(item); } },
+        { icon: 'open', label: '预览', cls: 'primary', fn: function () { closeSheet(); openPreview(item); } },
+        { icon: 'download', label: '下载', cls: '', fn: function () { closeSheet(); doDownload(item); } },
         { icon: 'share', label: '分享', cls: '', fn: function () { closeSheet(); doShare(item); } },
         { icon: 'rename', label: '重命名', cls: '', fn: function () { closeSheet(); onAction('rename', item); } },
         { icon: 'trash', label: '删除', cls: 'warn', fn: function () { closeSheet(); onAction('delete', item); } }
@@ -1206,6 +1207,8 @@
       el.addEventListener('click', it.fn);
       grid.appendChild(el);
     });
+    // 文件菜单 5 项时一行五列显示（其它菜单保持原有四列布局）
+    grid.style.gridTemplateColumns = (items.length === 5) ? 'repeat(5,1fr)' : '';
     show($('action-sheet'));
   }
   function closeSheet() { hide($('action-sheet')); }
@@ -1318,6 +1321,7 @@
     $('sheet-title').textContent = (item.FileName || '未命名') + '（回收站）';
     var grid = $('sheet-grid');
     grid.innerHTML = '';
+    grid.style.gridTemplateColumns = '';
     var items = [
       { icon: 'restore', label: '恢复', cls: 'primary', fn: function () {
           closeSheet();
@@ -1439,6 +1443,371 @@
       }
     });
   }
+
+  // ---------- 文件预览（图片 / 音视频 / 文本 / PDF / Word / Excel） ----------
+  // 方案：媒体与 PDF 走本地代理（原生带认证头转发 CDN 直链，支持 Range）；文本走原生 fetchText 桥；
+  // Word(docx)/Excel(xlsx/xls) 走 fetchBytes 桥 + 前端渲染库；其余类型降级提示（可复制直链 / 下载）。
+  var PREVIEW_EXT = {
+    image: ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'svg', 'ico'],
+    audio: ['mp3', 'wav', 'flac', 'aac', 'm4a', 'ogg', 'opus', 'amr'],
+    video: ['mp4', 'mov', 'm4v', 'webm', 'mkv', 'avi', '3gp'],
+    text: ['txt', 'md', 'json', 'xml', 'log', 'csv', 'ini', 'conf', 'yml', 'yaml', 'js', 'css', 'html', 'htm',
+      'java', 'kt', 'py', 'go', 'rs', 'c', 'cpp', 'h', 'sh', 'bat', 'sql', 'ts', 'php', 'rb', 'swift',
+      'toml', 'properties', 'gradle', 'srt', 'ass'],
+    docx: ['docx'],
+    xlsx: ['xlsx', 'xls'],
+    pdf: ['pdf']
+  };
+  function previewKindOf(name) {
+    var m = /\.([a-zA-Z0-9]+)$/.exec(String(name || ''));
+    var ext = m ? m[1].toLowerCase() : '';
+    if (!ext) return '';
+    for (var k in PREVIEW_EXT) {
+      if (PREVIEW_EXT[k].indexOf(ext) >= 0) return k;
+    }
+    return '';
+  }
+  // 复用下载直链获取链路（download_info）取预览用直链
+  function previewLinkFor(item, cb) {
+    if (!item || item.Type === 1) { cb(''); return; }
+    api('POST', API.download, JSON.stringify(buildDownloadBody(item)), true, function (d) {
+      if (!d || !d.data) {
+        var msg = (d && (d.message || d.error)) || '获取文件地址失败';
+        if (/size/i.test(msg)) msg = '该文件缺少大小信息，请刷新列表后重试';
+        toast(msg);
+        cb('');
+        return;
+      }
+      var link = pickDownloadUrl(d);
+      if (!link) { toast('暂无法获取预览链接'); cb(''); return; }
+      cb(link);
+    });
+  }
+  function pvBody() { return $('pv-body'); }
+  function renderPreviewLoading(msg) {
+    var box = pvBody();
+    if (!box) return;
+    box.innerHTML = '<div class="pv-loading"><div class="pv-spin"></div><div>' + esc(msg || '加载中...') + '</div></div>';
+  }
+  function renderPreviewFallback(sub, title) {
+    var box = pvBody();
+    if (!box) return;
+    box.innerHTML =
+      '<div class="pv-fallback">'
+      + '<div class="pv-fb-ic">!</div>'
+      + '<div class="pv-fb-title">' + esc(title || '无法在线预览该文件') + '</div>'
+      + '<div class="pv-fb-sub">' + esc(sub || '') + '</div>'
+      + '<div class="pv-fb-btns">'
+      + '<button class="pv-btn" id="pv-fb-copy">复制链接</button>'
+      + '<button class="pv-btn primary" id="pv-fb-download">下载</button>'
+      + '</div></div>';
+    var fbCopy = $('pv-fb-copy');
+    if (fbCopy) fbCopy.addEventListener('click', copyPreviewLink);
+    var fbDl = $('pv-fb-download');
+    if (fbDl) fbDl.addEventListener('click', function () {
+      var pv = state.preview;
+      if (pv && pv.item) doDownload(pv.item);
+    });
+  }
+  function openPreview(item) {
+    if (!item || item.Type === 1) return;
+    var name = item.FileName || item.fileName || '未命名';
+    state.preview = { item: item, name: name, kind: previewKindOf(name), link: '', pdf: null, pdfPage: 1, pdfTask: null, xlsBook: null };
+    $('pv-title').textContent = name;
+    renderPreviewLoading('正在获取文件地址...');
+    show($('page-preview'));
+    previewLinkFor(item, function (link) {
+      var pv = state.preview;
+      if (!pv || pv.item !== item) return; // 用户已关闭或切换
+      if (!link) { renderPreviewFallback('未能获取文件直链，请稍后重试', '预览失败'); return; }
+      pv.link = link;
+      renderPreviewBody();
+    });
+  }
+  function closePreview() {
+    hide($('page-preview'));
+    var pv = state.preview;
+    if (pv) {
+      if (pv.pdf && pv.pdf.destroy) { try { pv.pdf.destroy(); } catch (e) {} }
+      var m = document.querySelector('#pv-body audio, #pv-body video');
+      if (m && m.pause) { try { m.pause(); } catch (e) {} }
+    }
+    var box = pvBody();
+    if (box) box.innerHTML = '';
+    state.preview = null;
+  }
+  function copyPreviewLink() {
+    var pv = state.preview;
+    if (!pv || !pv.link) { toast('预览链接尚未就绪'); return; }
+    copyText(pv.link, '预览链接已复制');
+  }
+  function renderPreviewBody() {
+    var pv = state.preview;
+    if (!pv) return;
+    if (pv.kind === 'image' || pv.kind === 'audio' || pv.kind === 'video') {
+      var purl = (bridge && bridge.getPreviewUrl) ? bridge.getPreviewUrl(pv.link) : '';
+      if (!purl) { renderPreviewFallback('本地预览服务未就绪，请重启 App 后重试', '预览失败'); return; }
+      renderPreviewMedia(pv, purl);
+    } else if (pv.kind === 'text') {
+      renderPreviewText(pv);
+    } else if (pv.kind === 'pdf') {
+      renderPreviewPdf(pv);
+    } else if (pv.kind === 'docx') {
+      renderPreviewDocx(pv);
+    } else if (pv.kind === 'xlsx') {
+      renderPreviewXlsx(pv);
+    } else {
+      renderPreviewFallback('该类型暂不支持在线预览，可复制链接或下载后使用其他应用打开', '该类型暂不支持在线预览');
+    }
+  }
+  function renderPreviewMedia(pv, purl) {
+    var box = pvBody();
+    if (!box) return;
+    if (pv.kind === 'image') {
+      box.innerHTML = '<div class="pv-loading" id="pv-ld"><div class="pv-spin"></div><div>正在加载图片...</div></div>'
+        + '<div class="pv-image hidden" id="pv-imgwrap"><img id="pv-img" alt=""></div>';
+      var img = $('pv-img');
+      img.onload = function () { hide($('pv-ld')); show($('pv-imgwrap')); };
+      img.onerror = function () { renderPreviewFallback('图片加载失败，请稍后重试或下载查看', '预览失败'); };
+      img.src = purl;
+    } else if (pv.kind === 'audio') {
+      box.innerHTML = '<div class="pv-media"><div class="pv-media-name">' + esc(pv.name) + '</div>'
+        + '<audio id="pv-audio" controls preload="metadata"></audio>'
+        + '<div class="pv-loading" id="pv-ld"><div class="pv-spin"></div><div>正在加载音频...</div></div></div>';
+      var au = $('pv-audio');
+      au.oncanplay = function () { var ld = $('pv-ld'); if (ld) hide(ld); };
+      au.onerror = function () { renderPreviewFallback('音频加载失败或格式不受支持', '预览失败'); };
+      au.src = purl;
+    } else {
+      box.innerHTML = '<div class="pv-media"><video id="pv-video" controls playsinline webkit-playsinline></video>'
+        + '<div class="pv-loading" id="pv-ld"><div class="pv-spin"></div><div>正在加载视频...</div></div></div>';
+      var vd = $('pv-video');
+      vd.oncanplay = function () { var ld = $('pv-ld'); if (ld) hide(ld); };
+      vd.onerror = function () { renderPreviewFallback('视频加载失败或格式不受支持', '预览失败'); };
+      vd.src = purl;
+    }
+  }
+  function renderPreviewText(pv) {
+    renderPreviewLoading('正在加载文本...');
+    if (!bridge || !bridge.fetchText) { renderPreviewFallback('当前版本不支持文本预览'); return; }
+    window.__onFetchText = function (url, ok, text) {
+      if (state.preview !== pv || url !== pv.link) return;
+      if (!ok) { renderPreviewFallback('文本加载失败，请稍后重试', '预览失败'); return; }
+      var box = pvBody();
+      if (!box) return;
+      box.innerHTML = '<div class="pv-text"><pre id="pv-text-pre"></pre></div>';
+      $('pv-text-pre').textContent = text;
+    };
+    bridge.fetchText(pv.link);
+  }
+  // 按需加载本地资源库（避免启动时加载大体积脚本）
+  var _pvLibs = {};
+  function loadPvLib(globalName, src, cb) {
+    if (window[globalName]) { cb(null); return; }
+    var st = _pvLibs[src];
+    if (st) { st.push(cb); return; }
+    st = _pvLibs[src] = [cb];
+    var s = document.createElement('script');
+    s.src = src;
+    function done() {
+      var cbs = st.slice();
+      _pvLibs[src] = [];
+      for (var i = 0; i < cbs.length; i++) {
+        try { cbs[i](window[globalName] ? null : new Error('load failed')); } catch (e) {}
+      }
+    }
+    s.onload = done;
+    s.onerror = done;
+    document.head.appendChild(s);
+  }
+  function renderPreviewPdf(pv) {
+    renderPreviewLoading('正在加载 PDF...');
+    loadPvLib('pdfjsLib', 'lib/pdf.min.js', function (err) {
+      if (state.preview !== pv) return;
+      if (err || !window.pdfjsLib) { renderPreviewFallback('PDF 渲染组件加载失败', '预览失败'); return; }
+      try { pdfjsLib.GlobalWorkerOptions.workerSrc = 'lib/pdf.worker.min.js'; } catch (e) {}
+      var purl = (bridge && bridge.getPreviewUrl) ? bridge.getPreviewUrl(pv.link) : '';
+      if (!purl) { renderPreviewFallback('本地预览服务未就绪，请重启 App 后重试', '预览失败'); return; }
+      var task = pdfjsLib.getDocument({ url: purl });
+      task.promise.then(function (doc) {
+        if (state.preview !== pv) { try { doc.destroy(); } catch (e) {} return; }
+        pv.pdf = doc;
+        pv.pdfPage = 1;
+        buildPdfChrome(pv);
+        renderPdfPage(pv, 1);
+      }, function () {
+        // 流式（Range）加载失败时，退回经原生桥取全量字节再渲染
+        previewPdfViaBridge(pv);
+      });
+    });
+  }
+  function previewPdfViaBridge(pv) {
+    if (!bridge || !bridge.fetchBytes) { renderPreviewFallback('PDF 加载失败', '预览失败'); return; }
+    renderPreviewLoading('正在加载 PDF（兼容模式）...');
+    window.__onFetchBytes = function (url, ok, b64, msg) {
+      if (state.preview !== pv || url !== pv.link) return;
+      if (!ok || !b64) { renderPreviewFallback(msg || 'PDF 加载失败', '预览失败'); return; }
+      try {
+        var bin = atob(b64);
+        var arr = new Uint8Array(bin.length);
+        for (var i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+        pdfjsLib.getDocument({ data: arr }).promise.then(function (doc) {
+          if (state.preview !== pv) { try { doc.destroy(); } catch (e) {} return; }
+          pv.pdf = doc;
+          pv.pdfPage = 1;
+          buildPdfChrome(pv);
+          renderPdfPage(pv, 1);
+        }, function () { renderPreviewFallback('PDF 加载失败', '预览失败'); });
+      } catch (e) { renderPreviewFallback('PDF 加载失败', '预览失败'); }
+    };
+    bridge.fetchBytes(pv.link);
+  }
+  function buildPdfChrome(pv) {
+    var box = pvBody();
+    if (!box) return;
+    box.innerHTML = '<div class="pv-pdf">'
+      + '<div class="pv-pdf-scroll" id="pv-pdf-scroll"><canvas id="pv-canvas"></canvas></div>'
+      + '<div class="pv-pdf-bar">'
+      + '<button class="pv-btn" id="pv-prev">上一页</button>'
+      + '<span class="pv-pageinfo" id="pv-pageinfo">1 / ' + (pv.pdf ? pv.pdf.numPages : 1) + '</span>'
+      + '<button class="pv-btn" id="pv-next">下一页</button>'
+      + '</div></div>';
+    $('pv-prev').addEventListener('click', function () { pdfGo(pv, -1); });
+    $('pv-next').addEventListener('click', function () { pdfGo(pv, 1); });
+  }
+  function pdfGo(pv, delta) {
+    if (state.preview !== pv || !pv.pdf) return;
+    var n = pv.pdfPage + delta;
+    if (n < 1 || n > pv.pdf.numPages) return;
+    renderPdfPage(pv, n);
+  }
+  function renderPdfPage(pv, n) {
+    if (state.preview !== pv || !pv.pdf) return;
+    if (pv.pdfTask) { try { pv.pdfTask.cancel(); } catch (e) {} }
+    pv.pdf.getPage(n).then(function (page) {
+      if (state.preview !== pv) return;
+      pv.pdfPage = n;
+      var info = $('pv-pageinfo');
+      if (info) info.textContent = n + ' / ' + pv.pdf.numPages;
+      var wrap = $('pv-pdf-scroll');
+      var wrapW = wrap ? wrap.clientWidth : 320;
+      var width = Math.max(240, wrapW - 20);
+      try {
+        var base = page.getViewport({ scale: 1 });
+        var scale = width / base.width;
+        var dpr = window.devicePixelRatio || 1;
+        var vp = page.getViewport({ scale: scale * dpr });
+        var canvas = $('pv-canvas');
+        if (!canvas) return;
+        canvas.width = Math.floor(vp.width);
+        canvas.height = Math.floor(vp.height);
+        canvas.style.width = Math.floor(vp.width / dpr) + 'px';
+        canvas.style.height = Math.floor(vp.height / dpr) + 'px';
+        var ctx = canvas.getContext('2d');
+        pv.pdfTask = page.render({ canvasContext: ctx, viewport: vp });
+        if (pv.pdfTask && pv.pdfTask.promise) {
+          pv.pdfTask.promise.then(function () {}, function () {});
+        }
+      } catch (e) {}
+    });
+  }
+  function renderPreviewDocx(pv) {
+    renderPreviewLoading('正在加载 Word 文档...');
+    loadPvLib('mammoth', 'lib/mammoth.browser.min.js', function (err) {
+      if (state.preview !== pv) return;
+      if (err || !window.mammoth) { renderPreviewFallback('Word 渲染组件加载失败', '预览失败'); return; }
+      if (!bridge || !bridge.fetchBytes) { renderPreviewFallback('当前版本不支持 Word 预览'); return; }
+      window.__onFetchBytes = function (url, ok, b64, msg) {
+        if (state.preview !== pv || url !== pv.link) return;
+        if (!ok || !b64) { renderPreviewFallback(msg || 'Word 文档加载失败', '预览失败'); return; }
+        renderPreviewLoading('正在解析 Word 文档...');
+        try {
+          var bin = atob(b64);
+          var arr = new Uint8Array(bin.length);
+          for (var i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+          mammoth.convertToHtml({ arrayBuffer: arr.buffer }).then(function (result) {
+            if (state.preview !== pv) return;
+            var html = (result && result.value) ? result.value : '';
+            if (!html) { renderPreviewFallback('未能解析出文档内容', '预览失败'); return; }
+            var box = pvBody();
+            if (box) box.innerHTML = '<div class="pv-docx">' + html + '</div>';
+          }, function () { renderPreviewFallback('Word 文档解析失败', '预览失败'); });
+        } catch (e) { renderPreviewFallback('Word 文档解析失败', '预览失败'); }
+      };
+      bridge.fetchBytes(pv.link);
+    });
+  }
+  function renderPreviewXlsx(pv) {
+    renderPreviewLoading('正在加载表格...');
+    loadPvLib('XLSX', 'lib/xlsx.full.min.js', function (err) {
+      if (state.preview !== pv) return;
+      if (err || !window.XLSX) { renderPreviewFallback('表格渲染组件加载失败', '预览失败'); return; }
+      if (!bridge || !bridge.fetchBytes) { renderPreviewFallback('当前版本不支持表格预览'); return; }
+      window.__onFetchBytes = function (url, ok, b64, msg) {
+        if (state.preview !== pv || url !== pv.link) return;
+        if (!ok || !b64) { renderPreviewFallback(msg || '表格加载失败', '预览失败'); return; }
+        renderPreviewLoading('正在解析表格...');
+        try {
+          var bin = atob(b64);
+          var arr = new Uint8Array(bin.length);
+          for (var i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+          var wb = XLSX.read(arr, { type: 'array' });
+          if (!wb || !wb.SheetNames || !wb.SheetNames.length) { renderPreviewFallback('未能解析出表格内容', '预览失败'); return; }
+          pv.xlsBook = wb;
+          var tabs = '';
+          wb.SheetNames.forEach(function (sn, i) {
+            tabs += '<button class="pv-xls-tab' + (i === 0 ? ' active' : '') + '" data-i="' + i + '">' + esc(sn) + '</button>';
+          });
+          var box = pvBody();
+          if (box) box.innerHTML = '<div class="pv-xls"><div class="pv-xls-tabs" id="pv-xls-tabs">' + tabs + '</div>'
+            + '<div class="pv-xls-sheet" id="pv-xls-sheet"></div></div>';
+          var tabBox = $('pv-xls-tabs');
+          if (tabBox) {
+            tabBox.addEventListener('click', function (e) {
+              var t = e.target && e.target.closest ? e.target.closest('.pv-xls-tab') : null;
+              if (!t) return;
+              var idx = Number(t.getAttribute('data-i')) || 0;
+              var all = tabBox.querySelectorAll('.pv-xls-tab');
+              for (var j = 0; j < all.length; j++) {
+                if (j === idx) all[j].classList.add('active');
+                else all[j].classList.remove('active');
+              }
+              renderXlsSheet(pv, idx);
+            });
+          }
+          renderXlsSheet(pv, 0);
+        } catch (e) { renderPreviewFallback('表格解析失败', '预览失败'); }
+      };
+      bridge.fetchBytes(pv.link);
+    });
+  }
+  function renderXlsSheet(pv, idx) {
+    var sheetBox = $('pv-xls-sheet');
+    if (!sheetBox || !pv.xlsBook) return;
+    var ws = pv.xlsBook.Sheets[pv.xlsBook.SheetNames[idx]];
+    var html = '';
+    var truncated = false;
+    try {
+      var ref = ws && ws['!ref'];
+      if (ref) {
+        var rg = XLSX.utils.decode_range(ref);
+        if (rg.e.r > 300 || rg.e.c > 40) {
+          rg.e.r = Math.min(rg.e.r, 300);
+          rg.e.c = Math.min(rg.e.c, 40);
+          ws['!ref'] = XLSX.utils.encode_range(rg);
+          truncated = true;
+        }
+      }
+      html = XLSX.utils.sheet_to_html(ws, { editable: false });
+    } catch (e) { html = ''; }
+    if (!html) { sheetBox.innerHTML = '<div class="p-empty">该工作表为空</div>'; return; }
+    var m = /<body[^>]*>([\s\S]*)<\/body>/i.exec(html);
+    if (m) html = m[1];
+    sheetBox.innerHTML = html + (truncated ? '<div class="pv-xls-note">数据较大，仅展示前 300 行 / 40 列</div>' : '');
+    sheetBox.scrollTop = 0;
+    sheetBox.scrollLeft = 0;
+  }
+
 
   // 分享：弹出配置浮层（选有效期 + 提取码方式），确认后调用 123盘原生分享接口
   function doShare(item) {
@@ -2567,7 +2936,8 @@
 
   // ---------- Android 返回键 ----------
   window.__handleBack = function () {
-    // 覆盖式二级页（我的分享 / 接收分享）：优先关闭
+    // 覆盖式二级页（文件预览 / 我的分享 / 接收分享）：优先关闭
+    if (!$('page-preview').classList.contains('hidden')) { closePreview(); return true; }
     if (!$('page-receive').classList.contains('hidden')) { hide($('page-receive')); return true; }
     if (!$('page-shares').classList.contains('hidden')) { hide($('page-shares')); return true; }
     // 优先关闭弹出的浮层/弹窗
@@ -2728,6 +3098,11 @@
     if (sharesBack) sharesBack.addEventListener('click', function () { hide($('page-shares')); });
     var receiveBack = $('receive-back');
     if (receiveBack) receiveBack.addEventListener('click', function () { hide($('page-receive')); });
+    // 预览页返回 / 复制链接
+    var previewBack = $('pv-back');
+    if (previewBack) previewBack.addEventListener('click', closePreview);
+    var previewCopy = $('pv-copy');
+    if (previewCopy) previewCopy.addEventListener('click', copyPreviewLink);
     // 接收分享：打开 / 回车 / 转存
     var receiveOpen = $('receive-open');
     if (receiveOpen) receiveOpen.addEventListener('click', doOpenReceiveShare);

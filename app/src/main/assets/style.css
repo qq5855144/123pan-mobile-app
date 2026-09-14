@@ -599,3 +599,46 @@ svg { display: block; }
 #upload-progress .up-bar { height: 8px; background: #eef1f6; border-radius: 4px; overflow: hidden; }
 #upload-progress .up-bar-fill { height: 100%; width: 0%; background: linear-gradient(90deg, #4a8df0, #2B6DE8); border-radius: 4px; transition: width .25s ease; }
 #upload-progress .up-pct { font-size: 13px; font-weight: 600; color: #2B6DE8; margin-top: 8px; text-align: right; }
+
+
+/* ---------- 文件预览页 ---------- */
+#page-preview .pc-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pc-btn { margin-left: 10px; height: 36px; padding: 0 14px; border-radius: 999px; background: #eaf1ff; color: #2B6DE8; font-size: 13px; border: none; flex: 0 0 auto; }
+.pc-btn:active { opacity: .85; }
+.pv-loading { padding: 70px 0; text-align: center; color: #9aa2b1; font-size: 13px; }
+.pv-spin { width: 26px; height: 26px; margin: 0 auto 10px; border: 3px solid #e3e8f2; border-top-color: #2B6DE8; border-radius: 50%; animation: pvspin .8s linear infinite; }
+@keyframes pvspin { to { transform: rotate(360deg); } }
+.pv-image { display: flex; align-items: center; justify-content: center; min-height: 60vh; }
+.pv-image img { max-width: 100%; max-height: 78vh; border-radius: 10px; }
+.pv-media { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; padding: 30px 6px; }
+.pv-media video { width: 100%; max-height: 72vh; background: #000; border-radius: 10px; }
+.pv-media audio { width: 100%; max-width: 420px; }
+.pv-media-name { font-size: 14px; color: #4b5563; word-break: break-all; text-align: center; padding: 0 10px; }
+.pv-text { background: #fff; border: 1px solid #eef0f5; border-radius: 12px; padding: 12px 14px; }
+.pv-text pre { margin: 0; white-space: pre-wrap; word-break: break-all; font-size: 13px; line-height: 1.6; color: #1a1a1a; font-family: Consolas, Menlo, monospace; }
+.pv-docx { background: #fff; border: 1px solid #eef0f5; border-radius: 12px; padding: 16px; font-size: 14px; line-height: 1.7; color: #1a1a1a; overflow-wrap: break-word; }
+.pv-docx h1, .pv-docx h2, .pv-docx h3 { margin: 14px 0 8px; }
+.pv-docx p { margin: 8px 0; }
+.pv-docx img { max-width: 100%; }
+.pv-docx table { border-collapse: collapse; margin: 10px 0; }
+.pv-docx table td, .pv-docx table th { border: 1px solid #e6e8ee; padding: 4px 8px; font-size: 13px; }
+.pv-xls { display: flex; flex-direction: column; gap: 10px; }
+.pv-xls-tabs { display: flex; gap: 8px; overflow-x: auto; padding: 2px; }
+.pv-xls-tab { flex: 0 0 auto; height: 34px; padding: 0 14px; border-radius: 999px; border: 1px solid #e6e8ee; background: #fff; color: #4b5563; font-size: 13px; }
+.pv-xls-tab.active { background: #eaf1ff; border-color: #cfe0ff; color: #2B6DE8; font-weight: 600; }
+.pv-xls-sheet { background: #fff; border: 1px solid #eef0f5; border-radius: 12px; padding: 8px; overflow: auto; max-height: calc(100vh - 230px); }
+.pv-xls-sheet table { border-collapse: collapse; font-size: 12px; }
+.pv-xls-sheet td, .pv-xls-sheet th { border: 1px solid #e6e8ee; padding: 3px 8px; min-width: 44px; color: #1a1a1a; white-space: nowrap; }
+.pv-xls-note { font-size: 12px; color: #9aa2b1; padding: 6px 2px; }
+.pv-pdf { display: flex; flex-direction: column; gap: 10px; }
+.pv-pdf-scroll { overflow: auto; background: #fff; border: 1px solid #eef0f5; border-radius: 12px; padding: 10px; text-align: center; }
+.pv-pdf-bar { display: flex; align-items: center; justify-content: center; gap: 14px; }
+.pv-pageinfo { font-size: 13px; color: #4b5563; min-width: 70px; text-align: center; }
+.pv-fallback { padding: 60px 20px; text-align: center; }
+.pv-fb-ic { width: 56px; height: 56px; margin: 0 auto 14px; border-radius: 50%; background: #eef3fd; color: #2B6DE8; font-size: 24px; font-weight: 700; display: flex; align-items: center; justify-content: center; }
+.pv-fb-title { font-size: 16px; font-weight: 600; color: #1a1a1a; }
+.pv-fb-sub { font-size: 13px; color: #9aa2b1; margin: 8px 0 24px; line-height: 1.6; }
+.pv-fb-btns { display: flex; gap: 12px; justify-content: center; }
+.pv-btn { height: 36px; padding: 0 22px; border-radius: 999px; background: #fff; border: 1px solid #e6e8ee; color: #4b5563; font-size: 14px; }
+.pv-btn:active { opacity: .85; }
+.pv-btn.primary { background: #2B6DE8; border-color: #2B6DE8; color: #fff; }
