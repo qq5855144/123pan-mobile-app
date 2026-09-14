@@ -101,6 +101,10 @@ public class MainActivity extends Activity {
     private final java.util.Map<Long, UpTask> upTasks =
         new java.util.concurrent.ConcurrentHashMap<>();
     private long nextUpId = 800000000L;
+    // 大文件分片上传阈值：>=5MB 走 multipart（服务端 SliceSize 默认 5MB）；<5MB 维持整对象直传
+    private static final long UPLOAD_SLICE_THRESHOLD = 5L * 1024 * 1024;
+    // 分片上传"未开始传输数据前"失败时，允许回退整对象直传的最大文件（避免中等文件因分片初始化故障无法上传）
+    private static final long UPLOAD_FALLBACK_MAX = 64L * 1024 * 1024;
     private String baseHeaders =
         "platform=android;app-version=61;x-app-version=2.4.0;user-agent=123pan/v2.4.0("
         + osVersion + ";Xiaomi)";
@@ -1437,7 +1441,33 @@ public class MainActivity extends Activity {
                             appendUploadLog(log.toString() + "REUSED\n");
                             throw new StopUpload(msg);
                         }
+                        // ============ 2B) 大文件：分片上传（multipart，支持断点续传）============
+                        // 协议对齐 OlyMarco/123pan-uploader-cli（platform=web 实测可用）：
+                        //   upload_request -> s3_list_upload_parts(初始化/查已传分片)
+                        //   -> s3_repare_upload_parts_batch -> PUT(part)
+                        //   -> s3_list_upload_parts(确认) -> s3_complete_multipart_upload -> upload_complete
+                        // 说明：旧版"假成功"的根因是漏掉了上传前对 s3_list_upload_parts 的初始化
+                        // 调用（S3 multipart 会话未真正建立），本实现已补齐。
+                        if (size >= UPLOAD_SLICE_THRESHOLD) {
+                            try {
+                                msg = runMultipartUpload(ut, f, size, etag, fname, parentFileId,
+                                    bucket, storageNode, uploadKey, uploadId, fileId, sliceSize, log);
+                                ok = "true";
+                                appendUploadLog(log.toString() + "==> SUCCESS(multipart): " + msg + "\n");
+                                throw new StopUpload(msg);
+                            } catch (MultipartFallback mf) {
+                                // 仅在"未开始传输任何分片数据"的早期失败时回退整对象直传；
+                                // 大文件（>64MB）无法整读内存，直接报错让用户重试（继续走断点续传）。
+                                if (size > UPLOAD_FALLBACK_MAX) {
+                                    appendUploadLog(log.toString());
+                                    throw new IOException("分片上传初始化失败：" + mf.getMessage());
+                                }
+                                log.append("[mp] 初始化失败，回退整对象直传：").append(mf.getMessage()).append("\n");
+                                Log.d("PAN", "multipart fallback: " + mf.getMessage());
+                            }
+                        }
                         // ============ 2) 整对象直传（官方 Web 路径，决定性修复）============
+                        // 【2026-09-14 更新】分片路径已在 2B 分支修复启用（补上初始化调用）：>=5MB 文件走分片，支持断点续传；本整对象路径用于 <5MB 小文件及分片初始化失败回退。
                         // 根因（2026-08-31，Median Browser 抓包 + curl 复现确认）：
                         // App 此前实现的是"分片上传"路径
                         //   (upload_request -> s3_list_upload_parts 初始化 -> s3_repare_upload_parts_batch
@@ -1654,8 +1684,324 @@ public class MainActivity extends Activity {
     static class StopUpload extends RuntimeException {
         StopUpload(String msg) { super(msg); }
     }
+    /** 分片上传"早期失败"（尚未传输任何分片数据）：可安全回退整对象直传。 */
+    static class MultipartFallback extends Exception {
+        MultipartFallback(String msg) { super(msg); }
+    }
+    /**
+     * 大文件分片上传（multipart）＋断点续传。
+     * 流程：s3_list_upload_parts(初始化/查已传分片) -> 循环[s3_repare_upload_parts_batch -> PUT(part)]
+     *    -> s3_list_upload_parts(确认) -> s3_complete_multipart_upload -> upload_complete。
+     * 断点续传：
+     *   1) 每次上传前先查已上传分片（s3_list_upload_parts 为权威来源），跳过已传分片；
+     *   2) 若本次 upload_request 返回新 UploadId，但本地缓存有"同一文件+同一父目录"的旧会话，
+     *      则探测旧会话是否仍有分片，有则切回旧会话继续（取消/失败/重启后重试均可续传）。
+     * 仅在"未开始传输任何数据"前失败时抛 MultipartFallback（供调用方回退整对象）。
+     */
+    private String runMultipartUpload(UpTask ut, File f, long size, String etag, String fname,
+            long parentFileId, String bucket, String storageNode, String uploadKey, String uploadId,
+            long fileId, long sliceSize, StringBuilder log) throws Exception {
+        final String API = "https://api.123pan.cn";
+        if (sliceSize <= 0) sliceSize = 5L * 1024 * 1024;
+        if (uploadId == null || uploadId.isEmpty()) throw new MultipartFallback("UploadId 为空");
 
-    /** 读取本地文件全部字节（小文件直读，用于分片上传）。 */
+        // ---------- 1) 会话选择（支持复用历史会话续传） ----------
+        String useBucket = bucket, useNode = storageNode, useKey = uploadKey, useUploadId = uploadId;
+        long useSlice = sliceSize;
+        java.util.Set<Integer> uploaded = new java.util.HashSet<Integer>();
+        boolean usedCached = false;
+        // 会话缓存键：同父目录 + 同内容（etag）+ 同大小才可续传（避免跨目录串会话）
+        String sessKey = "upsess_" + parentFileId + "_" + etag + "_" + size;
+        String cachedJson = prefs.getString(sessKey, "");
+        if (!cachedJson.isEmpty()) {
+            try {
+                org.json.JSONObject cs = new org.json.JSONObject(cachedJson);
+                String cUp = cs.optString("uploadId", "");
+                long cSlice = cs.optLong("sliceSize", 0);
+                if (!cUp.isEmpty() && !cUp.equals(uploadId) && cSlice == sliceSize) {
+                    org.json.JSONObject lr = listUploadParts(cs.optString("bucket", ""),
+                        cs.optString("key", ""), cUp, cs.optString("storageNode", ""));
+                    if (lr != null && lr.optInt("code", -1) == 0) {
+                        java.util.Set<Integer> upC = parseUploadedParts(lr);
+                        if (upC.isEmpty()) {
+                            // 服务端未返回分片明细：退回本地记录的已传分片作为参考
+                            org.json.JSONArray la = cs.optJSONArray("uploaded");
+                            if (la != null) {
+                                for (int i = 0; i < la.length(); i++) {
+                                    int pn = la.optInt(i, 0);
+                                    if (pn > 0) upC.add(pn);
+                                }
+                            }
+                        }
+                        if (!upC.isEmpty()) {
+                            useBucket = cs.optString("bucket", bucket);
+                            useKey = cs.optString("key", uploadKey);
+                            useNode = cs.optString("storageNode", storageNode);
+                            useUploadId = cUp;
+                            uploaded = upC;
+                            usedCached = true;
+                            log.append("[mp] 复用历史会话续传 uploadId=").append(cUp)
+                               .append(" parts=").append(upC.size()).append("\n");
+                        }
+                    }
+                }
+            } catch (Exception ignore) {}
+        }
+        if (!usedCached) {
+            // 对当前会话执行初始化调用（协议必需）并查询已传分片
+            org.json.JSONObject lr;
+            try {
+                lr = listUploadParts(bucket, uploadKey, uploadId, storageNode);
+            } catch (Exception e) {
+                throw new MultipartFallback("列表已传分片失败: " + e.getMessage());
+            }
+            if (lr == null || lr.optInt("code", -1) != 0) {
+                throw new MultipartFallback("列表已传分片失败: "
+                    + (lr == null ? "无响应" : lr.optString("message")));
+            }
+            uploaded = parseUploadedParts(lr);
+            if (uploaded.isEmpty()) {
+                // 服务端未返回分片明细时，仅当本地缓存会话与当前一致才采信本地记录
+                try {
+                    org.json.JSONObject cs = new org.json.JSONObject(cachedJson);
+                    if (cs.optString("uploadId", "").equals(uploadId)) {
+                        org.json.JSONArray la = cs.optJSONArray("uploaded");
+                        if (la != null) {
+                            for (int i = 0; i < la.length(); i++) {
+                                int pn = la.optInt(i, 0);
+                                if (pn > 0) uploaded.add(pn);
+                            }
+                        }
+                    }
+                } catch (Exception ignore) {}
+            }
+        }
+        log.append("[mp] session uploadId=").append(useUploadId)
+           .append(" slice=").append(useSlice)
+           .append(" uploadedParts=").append(uploaded.size())
+           .append(" cached=").append(usedCached).append("\n");
+        // 持久化会话（无论新老），供取消/失败/重启后重试续传
+        try {
+            org.json.JSONObject save = new org.json.JSONObject();
+            save.put("bucket", useBucket);
+            save.put("key", useKey);
+            save.put("uploadId", useUploadId);
+            save.put("storageNode", useNode);
+            save.put("sliceSize", useSlice);
+            save.put("fileId", fileId);
+            save.put("uploaded", new org.json.JSONArray(new java.util.ArrayList<Integer>(uploaded)));
+            save.put("ts", System.currentTimeMillis());
+            prefs.edit().putString(sessKey, save.toString()).apply();
+        } catch (Exception ignore) {}
+
+        long totalParts = (size + useSlice - 1) / useSlice;
+        if (totalParts < 1) totalParts = 1;
+        long uploadedBytes = 0;
+        for (int pn : uploaded) {
+            if (pn >= 1 && pn <= totalParts) {
+                uploadedBytes += Math.min(useSlice, size - (long) (pn - 1) * useSlice);
+            }
+        }
+        final int resumeParts = uploaded.size();
+        ut.total = size;
+        ut.done = uploadedBytes;
+        if (resumeParts > 0) fireUploadResume(ut, uploadedBytes, size);
+        fireUploadProgress(ut, uploadedBytes, size);
+
+        // ---------- 2) 循环上传缺失分片 ----------
+        boolean payloadStarted = false;
+        byte[] buf = new byte[262144];
+        java.io.RandomAccessFile raf = new java.io.RandomAccessFile(f, "r");
+        try {
+            for (int pi = 1; pi <= totalParts; pi++) {
+                if (ut.cancelled) throw new StopUpload("已取消上传");
+                if (uploaded.contains(pi)) continue;
+                long start = (long) (pi - 1) * useSlice;
+                long partLen = Math.min(useSlice, size - start);
+                // 2a) 获取该分片预签名地址
+                String prepBody = "{\"bucket\":\"" + useBucket + "\",\"key\":\"" + useKey
+                    + "\",\"partNumberEnd\":" + (pi + 1)
+                    + ",\"partNumberStart\":" + pi
+                    + ",\"uploadId\":\"" + useUploadId + "\",\"StorageNode\":\"" + useNode + "\"}";
+                String prepResp;
+                try {
+                    prepResp = httpRequest("POST",
+                        API + "/b/api/file/s3_repare_upload_parts_batch", prepBody, true);
+                } catch (IOException e) {
+                    if (!payloadStarted && uploaded.isEmpty()) {
+                        throw new MultipartFallback("获取分片地址失败: " + e.getMessage());
+                    }
+                    throw e;
+                }
+                org.json.JSONObject prepJson = new org.json.JSONObject(prepResp);
+                if (prepJson.optInt("code", -1) != 0) {
+                    if (!payloadStarted && uploaded.isEmpty()) {
+                        throw new MultipartFallback("获取分片地址失败: " + prepJson.optString("message"));
+                    }
+                    throw new IOException("分片 " + pi + " 获取预签名地址失败: "
+                        + prepJson.optString("message"));
+                }
+                String putUrl = prepJson.getJSONObject("data").getJSONObject("presignedUrls")
+                    .optString(String.valueOf(pi));
+                if (putUrl.isEmpty()) {
+                    throw new IOException("分片 " + pi + " 预签名地址为空");
+                }
+                // 2b) PUT 分片（流式读取本地文件对应区间，256KB 分块检查取消并上报进度）
+                raf.seek(start);
+                HttpURLConnection put = (HttpURLConnection) new URL(putUrl).openConnection();
+                put.setConnectTimeout(30000);
+                put.setReadTimeout(180000);
+                put.setRequestMethod("PUT");
+                put.setDoOutput(true);
+                put.setFixedLengthStreamingMode((int) partLen);
+                payloadStarted = true;
+                java.io.OutputStream pos = put.getOutputStream();
+                long sent = 0;
+                while (sent < partLen) {
+                    if (ut.cancelled) {
+                        try { pos.close(); } catch (Exception ignore) {}
+                        throw new StopUpload("已取消上传");
+                    }
+                    int len = (int) Math.min((long) buf.length, partLen - sent);
+                    int rn = raf.read(buf, 0, len);
+                    if (rn <= 0) throw new IOException("读取本地文件失败");
+                    pos.write(buf, 0, rn);
+                    sent += rn;
+                    fireUploadProgress(ut, uploadedBytes + sent, size);
+                }
+                pos.flush();
+                pos.close();
+                int putCode = put.getResponseCode();
+                log.append("[mp.").append(pi).append("] PUT status=").append(putCode).append("\n");
+                if (putCode < 200 || putCode >= 300) {
+                    throw new IOException("分片 " + pi + " 上传失败 HTTP " + putCode);
+                }
+                uploadedBytes += partLen;
+                uploaded.add(pi);
+                // 更新持久化的已传分片记录（服务端不返回明细时兜底）
+                try {
+                    org.json.JSONObject cs2 = new org.json.JSONObject(prefs.getString(sessKey, "{}"));
+                    cs2.put("uploaded", new org.json.JSONArray(new java.util.ArrayList<Integer>(uploaded)));
+                    prefs.edit().putString(sessKey, cs2.toString()).apply();
+                } catch (Exception ignore) {}
+                fireUploadProgress(ut, uploadedBytes, size);
+                logDl("upload#" + ut.id + " part " + pi + "/" + totalParts + " ok");
+            }
+        } finally {
+            try { raf.close(); } catch (Exception ignore) {}
+        }
+
+        // ---------- 3) 确认已上传分片 ----------
+        org.json.JSONObject listRes = listUploadParts(useBucket, useKey, useUploadId, useNode);
+        log.append("[mp] list_parts(final): ").append(listRes == null ? "()" : listRes.toString()).append("\n");
+        if (listRes == null || listRes.optInt("code", -1) != 0) {
+            throw new IOException("确认分片列表失败: "
+                + (listRes == null ? "无响应" : listRes.optString("message")));
+        }
+        java.util.Set<Integer> finParts = parseUploadedParts(listRes);
+        if (!finParts.isEmpty() && finParts.size() < totalParts) {
+            log.append("[mp] warn: 服务端分片确认 ").append(finParts.size())
+               .append("/").append(totalParts).append("\n");
+        }
+
+        // ---------- 4) 完成分片合并 ----------
+        String compBody = "{\"bucket\":\"" + useBucket + "\",\"key\":\"" + useKey
+            + "\",\"uploadId\":\"" + useUploadId + "\",\"storageNode\":\"" + useNode + "\"}";
+        String compResp = httpRequest("POST",
+            API + "/b/api/file/s3_complete_multipart_upload", compBody, true);
+        log.append("[mp] complete: ").append(compResp).append("\n");
+        org.json.JSONObject compJson = new org.json.JSONObject(compResp);
+        if (compJson.optInt("code", -1) != 0) {
+            throw new IOException("完成分片合并失败: " + compJson.optString("message"));
+        }
+        if (size > 64L * 1024 * 1024) {
+            try { Thread.sleep(3000); } catch (InterruptedException ignore) {} // 大文件合并较慢，稍候再收尾
+        }
+
+        // ---------- 5) 结束上传会话（归档） ----------
+        String closeBody = "{\"fileId\":" + fileId + "}";
+        String closeResp = httpRequest("POST", API + "/b/api/file/upload_complete", closeBody, true);
+        log.append("[mp] upload_complete: ").append(closeResp).append("\n");
+        org.json.JSONObject closeJson = new org.json.JSONObject(closeResp);
+        if (closeJson.optInt("code", -1) != 0) {
+            throw new IOException("上传收尾失败: " + closeJson.optString("message"));
+        }
+        // 成功后清除会话缓存
+        try { prefs.edit().remove(sessKey).apply(); } catch (Exception ignore) {}
+
+        StringBuilder m = new StringBuilder();
+        m.append("上传成功：").append(fname)
+         .append("（").append(size / 1024).append("KB, 分片 ").append(totalParts).append(" 片");
+        if (resumeParts > 0) m.append(", 断点续传跳过 ").append(resumeParts).append(" 片");
+        m.append(", fileId=").append(fileId).append("）");
+        return m.toString();
+    }
+    /** 调用 s3_list_upload_parts（小写 storageNode；解析失败返回 null）。 */
+    private org.json.JSONObject listUploadParts(String bucket, String key, String uploadId,
+            String storageNode) throws IOException {
+        String body = "{\"bucket\":\"" + bucket + "\",\"key\":\"" + key
+            + "\",\"uploadId\":\"" + uploadId + "\",\"storageNode\":\"" + storageNode + "\"}";
+        String resp = httpRequest("POST", "https://api.123pan.cn/b/api/file/s3_list_upload_parts", body, true);
+        try {
+            return new org.json.JSONObject(resp);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+    /** 尽力解析 s3_list_upload_parts 响应中的已上传分片号（兼容多种字段命名；解析不到返回空集合）。 */
+    private static java.util.Set<Integer> parseUploadedParts(org.json.JSONObject resp) {
+        java.util.Set<Integer> set = new java.util.HashSet<Integer>();
+        if (resp == null) return set;
+        org.json.JSONObject data = resp.optJSONObject("data");
+        if (data == null) return set;
+        org.json.JSONArray arr = data.optJSONArray("Parts");
+        if (arr == null) arr = data.optJSONArray("parts");
+        if (arr == null) arr = data.optJSONArray("UploadedParts");
+        if (arr == null) arr = data.optJSONArray("uploadedParts");
+        if (arr == null) arr = data.optJSONArray("List");
+        if (arr == null) arr = data.optJSONArray("files");
+        if (arr == null) return set;
+        for (int i = 0; i < arr.length(); i++) {
+            Object o = arr.opt(i);
+            if (o instanceof org.json.JSONObject) {
+                org.json.JSONObject it = (org.json.JSONObject) o;
+                int pn = it.optInt("PartNumber", it.optInt("partNumber", it.optInt("Part", 0)));
+                if (pn > 0) set.add(pn);
+            } else if (o instanceof Integer) {
+                int pn = (Integer) o;
+                if (pn > 0) set.add(pn);
+            }
+        }
+        return set;
+    }
+    /** 向前端发送上传进度（UI 线程执行；同步任务表进度）。 */
+    private void fireUploadProgress(final UpTask ut, final long done, final long total) {
+        ut.done = done;
+        ut.total = total;
+        handler.post(new Runnable() {
+            @Override public void run() {
+                if (webView != null) {
+                    webView.evaluateJavascript(
+                        "window.__onUploadProgress&&window.__onUploadProgress("
+                        + ut.id + "," + done + "," + total + ");", null);
+                }
+            }
+        });
+    }
+    /** 向前端发送"断点续传已从历史进度继续"通知（done 为已跳过的已传字节数）。 */
+    private void fireUploadResume(final UpTask ut, final long done, final long total) {
+        handler.post(new Runnable() {
+            @Override public void run() {
+                if (webView != null) {
+                    webView.evaluateJavascript(
+                        "window.__onUploadResume&&window.__onUploadResume("
+                        + ut.id + "," + done + "," + total + ");", null);
+                }
+            }
+        });
+    }
+
+    /** 读取本地文件全部字节（整对象直传 / 分片初始化回退时使用；大文件走分片流式上传，不再整读）。 */
     private byte[] readBytes(File f) throws IOException {
         FileInputStream fis = new FileInputStream(f);
         try {

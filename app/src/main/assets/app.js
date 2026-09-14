@@ -356,6 +356,8 @@
     t.status = 'uploading';
     t.done = 0;
     t.failMsg = '';
+    t._resumeToasted = false;
+    t._lastPct = -1;
     saveUpQueue();
     if (state.view === 'transfers') renderTransfers();
     showUploadProgress(t.name, 0, 0);
@@ -389,6 +391,8 @@
     t.status = 'waiting';
     t.done = 0;
     t.failMsg = '';
+    t._resumeToasted = false;
+    t._lastPct = -1;
     saveUpQueue();
     if (state.view === 'transfers') renderTransfers();
     scheduleNextUpload();
@@ -1641,6 +1645,23 @@
     var fill = $('up-bar-fill');
     if (fill) fill.style.width = '0%';
   }
+  // 断点续传回调：原生复用历史会话并从断点继续（done 为已跳过的字节数）
+  window.__onUploadResume = function (taskId, done, total) {
+    var t = null;
+    (state.upQueue || []).forEach(function (x) { if (Number(x.id) === Number(taskId)) t = x; });
+    if (!t || t.status === 'cancelled') return;
+    t.done = Number(done) || 0;
+    if (Number(total) > 0) t.total = Number(total);
+    t._lastPct = -1;
+    saveUpQueue();
+    if (state.view === 'transfers') renderTransfers();
+    showUploadProgress(t.name, t.done, t.total);
+    if (!t._resumeToasted) {
+      t._resumeToasted = true;
+      var pct = t.total > 0 ? Math.floor(t.done * 100 / t.total) : 0;
+      toast('已从断点继续上传：' + (t.name || '') + '（已完成 ' + pct + '%）');
+    }
+  };
   // 上传进度回调（原生任务 id 维度；节流：进度百分比变化才重绘）
   window.__onUploadProgress = function (taskId, done, total) {
     var t = null;
