@@ -21,6 +21,7 @@
   <div id="page-main" class="hidden">
     <header id="topbar">
       <span id="top-title">123云盘</span>
+      <span id="top-sort" data-icon="sort" title="排序"></span>
     </header>
 
     <!-- 内容区（文件 / 传输 / 我的 三个视图） -->
@@ -89,6 +90,10 @@
         <div class="mine-item mine-item-btn" id="account-add">
           <span class="mine-label"><span class="mi-icon" data-icon="user-plus"></span>添加账号</span><span class="mine-val mine-arrow">›</span>
         </div>
+
+        <div class="mine-section-title">分享</div>
+        <div class="mine-item mine-item-btn" id="mine-shares"><span class="mine-label"><span class="mi-icon" data-icon="share"></span>我的分享</span><span class="mine-arrow">›</span></div>
+        <div class="mine-item mine-item-btn" id="mine-receive"><span class="mine-label"><span class="mi-icon" data-icon="link"></span>接收分享</span><span class="mine-arrow">›</span></div>
 
         <div class="mine-section-title">通用</div>
         <div class="mine-item" id="mine-quota"><span class="mine-label"><span class="mi-icon" data-icon="hdd"></span>存储空间</span><span class="mine-val" id="mine-quota-val">-</span></div>
@@ -197,6 +202,59 @@
     <div class="sheet-title" id="account-action-title">账号操作</div>
     <div class="account-actions" id="account-actions-body"></div>
     <div class="sheet-item cancel" data-close>取消</div>
+  </div>
+</div>
+
+<!-- 我的分享页 -->
+<div id="page-shares" class="page-cover hidden">
+  <div class="pc-head">
+    <span class="pc-back" id="shares-back">‹</span>
+    <span class="pc-title">我的分享</span>
+  </div>
+  <div class="pc-body" id="shares-list"></div>
+</div>
+
+<!-- 接收分享页 -->
+<div id="page-receive" class="page-cover hidden">
+  <div class="pc-head">
+    <span class="pc-back" id="receive-back">‹</span>
+    <span class="pc-title">接收分享</span>
+  </div>
+  <div class="pc-body">
+    <div class="rc-inputs">
+      <input id="receive-link" type="text" placeholder="粘贴分享链接或分享码" autocomplete="off">
+      <input id="receive-pwd" type="text" placeholder="提取码（如有）" autocomplete="off">
+      <button id="receive-open" class="btn-primary rc-open">打开分享</button>
+    </div>
+    <div class="rc-tip" id="receive-tip"></div>
+    <div class="receive-crumbs hidden" id="receive-crumbs"></div>
+    <div id="receive-list"></div>
+  </div>
+  <div class="rc-bar hidden" id="receive-bar">
+    <span id="receive-selinfo">已选 0 项</span>
+    <button id="receive-save" class="rc-save">转存到网盘</button>
+  </div>
+</div>
+
+<!-- 排序面板 -->
+<div id="sort-sheet" class="sheet hidden">
+  <div class="sheet-mask" data-close></div>
+  <div class="sheet-panel">
+    <div class="sheet-title">排序方式</div>
+    <div class="sort-opts" id="sort-fields">
+      <div class="sort-opt" data-by="file_name"><span>文件名</span></div>
+      <div class="sort-opt" data-by="file_size"><span>大小</span></div>
+      <div class="sort-opt" data-by="updated_at"><span>修改时间</span></div>
+      <div class="sort-opt" data-by="file_id"><span>默认排序</span></div>
+    </div>
+    <div class="sort-dir-row">
+      <span>排序方向</span>
+      <div class="sort-dir" id="sort-dir">
+        <button class="sd-btn" data-dir="asc">升序 ↑</button>
+        <button class="sd-btn" data-dir="desc">降序 ↓</button>
+      </div>
+    </div>
+    <div class="sheet-item cancel" data-close>关闭</div>
   </div>
 </div>
 
