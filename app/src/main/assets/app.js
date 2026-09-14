@@ -541,6 +541,7 @@
     for (var u = 0; tab === 'upload' && u < ups.length; u++) {
       var ut = ups[u];
       var unm = ut.name || '';
+      var uicName = iconForName(unm);
       var usz = fmtSize(ut.total || ut.size);
       var ubtn = '';
       var ulabel;
@@ -555,7 +556,7 @@
         ubtn = '<button class="transfer-act t-upretry" data-u="' + u + '">重试</button>';
       }
       html += '<div class="transfer-item">'
-        + '<span class="transfer-tag">上传</span>'
+        + '<div class="transfer-ic ic-' + uicName + '" data-icon="' + uicName + '"></div>'
         + '<div class="transfer-info"><div class="transfer-name">' + esc(unm) + '</div>'
         + '<div class="transfer-sub">' + esc(usz) + ' · ' + esc(ulabel) + '</div></div>'
         + ubtn + '<button class="up-del" data-u="' + u + '" title="移除记录">×</button>'
@@ -571,10 +572,9 @@
         : (t.status === 'failed' ? (t.failMsg || '失败')
         : (t.status === 'paused' ? statusLabel(2, t.done, t.total) : mapStatusText(t.status))));
       var doneOk = (t.status === 'completed');
-      // 已完成任务显示真实文件类型图标，未完成任务显示“下载”文字标签
-      var icName = doneOk ? iconForName(nm) : '';
-      var icHtml = doneOk ? '<div class="transfer-ic ic-' + icName + '" data-icon="' + icName + '"></div>'
-        : '<span class="transfer-tag">下载</span>';
+      // 所有任务统一按文件类型显示徽章图标（下载中/已完成均显示）
+      var icName = iconForName(nm);
+      var icHtml = '<div class="transfer-ic ic-' + icName + '" data-icon="' + icName + '"></div>';
       // 主操作按钮：下载中→暂停 / 已暂停→继续 / 失败→重试 / 已完成→打开
       var mainBtn;
       if (doneOk) mainBtn = '<button class="transfer-open" data-i="' + i + '">打开</button>';
@@ -592,6 +592,8 @@
         + '</div>';
     }
     box.innerHTML = html;
+    // 注入动态生成的类型徽章图标（修复传输列表图标不显示）
+    injectIcons(box);
     // 打开按钮：apk 走安装程序，其他走系统推荐打开方式
     box.querySelectorAll('.transfer-open').forEach(function (btn) {
       btn.addEventListener('click', function () {
