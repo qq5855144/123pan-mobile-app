@@ -463,6 +463,8 @@ svg { display: block; }
 }
 .st-btn.primary { background: #2B6DE8; border-color: #2B6DE8; color: #fff; }
 .st-btn.primary.disabled { background: #c5d4f5; border-color: #c5d4f5; color: #fff; }
+.st-btn.danger { background: #fdecec; border-color: #fdecec; color: #e5484d; }
+.st-btn.danger.disabled { background: #fdf5f5; border-color: #fdf5f5; color: #f2c0c2; }
 
 /* 移动文件夹选择器 */
 .move-panel { max-height: 70vh; display: flex; flex-direction: column; }

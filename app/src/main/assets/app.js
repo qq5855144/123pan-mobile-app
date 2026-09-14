@@ -632,6 +632,8 @@
     if (cnt) cnt.textContent = '已选 ' + n + ' 项';
     var mv = $('select-move');
     if (mv) mv.classList.toggle('disabled', n === 0);
+    var del = $('select-delete');
+    if (del) del.classList.toggle('disabled', n === 0);
   }
 
   // ---------- 文件夹选择器（移动目标） ----------
@@ -744,6 +746,41 @@
     });
   }
 
+  // 批量删除：将选中的文件/文件夹移入回收站（整理栏删除按钮）
+  function deleteSelected() {
+    var n = Object.keys(state.selectedMap).length;
+    if (!n) { toast('请先选择要删除的文件'); return; }
+    showConfirm('确认删除选中的 ' + n + ' 项？删除后将移入回收站', doDeleteSelected);
+  }
+  function doDeleteSelected() {
+    // 收集选中项的 FileId 列表（支持批量）
+    var fileIdList = [];
+    for (var k in state.selectedMap) {
+      fileIdList.push({ FileId: Number(state.selectedMap[k].FileId) || 0 });
+    }
+    if (!fileIdList.length) return;
+    var count = fileIdList.length;
+    // 批量移入回收站：复用删除接口，fileTrashInfoList 传入多个 FileId 实现批量删除
+    api('POST', API.trash,
+      JSON.stringify({
+        RequestSource: null,
+        driveId: 0,
+        event: 'intoRecycle',
+        fileTrashInfoList: fileIdList,
+        operatePlace: 1,
+        operation: true
+      }),
+      true,
+      function (d) {
+        if (d && d.code === 0) {
+          exitSelectMode();
+          toast('已将 ' + count + ' 项移入回收站');
+          loadList();
+        } else {
+          toast((d && d.message) || '删除失败');
+        }
+      });
+  }
   // ---------- 全局搜索（全盘文件） ----------
   function doSearch(keyword) {
     keyword = (keyword || '').trim();
@@ -1726,8 +1763,9 @@
     // 整理（多选）：进入多选模式
     var toolOrganize = $('tool-organize');
     if (toolOrganize) toolOrganize.addEventListener('click', enterSelectMode);
-    // 多选操作栏：取消 / 移动
+    // 多选操作栏：取消 / 删除 / 移动
     $('select-cancel').addEventListener('click', exitSelectMode);
+    $('select-delete').addEventListener('click', deleteSelected);
     $('select-move').addEventListener('click', openMovePicker);
     // 移动文件夹选择器：取消 / 确定移动
     $('picker-cancel').addEventListener('click', closeMovePicker);
