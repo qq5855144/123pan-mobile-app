@@ -340,10 +340,11 @@ svg { display: block; }
 .sheet-grid-item.primary .sgi-icon { background: #eaf1ff; color: #2B6DE8; font-weight: 600; }
 .sheet-item.cancel {
   height: 46px; display: flex; align-items: center; justify-content: center;
-  border-radius: 12px; background: #f7f8fa; font-size: 15px; color: #1a1a1a;
+  border-radius: 999px; background: #fff; border: 1px solid #e6e8ee; font-size: 15px; color: #4b5563;
 }
 
 /* ---------- 弹窗 ---------- */
+/* 弹窗/弹层按钮统一为胶囊形（参照整理工具栏 .st-btn 按钮 UI） */
 .modal { position: fixed; inset: 0; z-index: 110; display: flex; align-items: center; justify-content: center; }
 .modal-mask { position: absolute; inset: 0; background: rgba(0,0,0,.45); }
 .modal-panel {
@@ -359,11 +360,11 @@ svg { display: block; }
 .modal-panel input:focus { outline: none; border-color: #2B6DE8; }
 .modal-btns { display: flex; gap: 12px; margin-top: 20px; }
 .btn-plain {
-  flex: 1; height: 44px; border: 1px solid #e6e8ee; border-radius: 10px; background: #fff; font-size: 15px;
+  flex: 1; height: 44px; border: 1px solid #e6e8ee; border-radius: 999px; background: #fff; font-size: 15px; color: #4b5563;
 }
-.modal-btns .btn-primary { flex: 1; height: 44px; margin-top: 0; font-size: 15px; }
+.modal-btns .btn-primary { flex: 1; height: 44px; margin-top: 0; font-size: 15px; border-radius: 999px; }
 .btn-ghost-row {
-  width: 100%; height: 44px; margin-bottom: 10px; border-radius: 10px; background: #f5f7fb; color: #2B6DE8; font-size: 15px; font-weight: 500;
+  width: 100%; height: 44px; margin-bottom: 10px; border-radius: 999px; background: #fff; border: 1px solid #e6e8ee; color: #2B6DE8; font-size: 15px; font-weight: 500;
 }
 .btn-ghost-row:active { background: #eaf1ff; }
 
@@ -372,7 +373,7 @@ svg { display: block; }
   font-size: 15px; color: #1f2329; line-height: 1.6; text-align: center;
   word-break: break-all; padding: 4px 0 2px;
 }
-.modal-btns .btn-primary.danger { background: #e5484d; }
+.modal-btns .btn-primary.danger { background: #fdecec; color: #e5484d; }
 
 
 /* ---------- 分享弹窗 ---------- */
@@ -411,9 +412,9 @@ svg { display: block; }
 }
 .sc-custom input:focus { outline: none; border-color: #2B6DE8; background: #fff; }
 .sc-btns { display: flex; gap: 12px; margin-top: 22px; }
-.sc-btn { flex: 1; height: 46px; border-radius: 12px; font-size: 15px; font-weight: 600; }
-.sc-btn.cancel { background: #f7f8fa; color: #1a1a1a; border: none; }
-.sc-btn.primary { background: #2B6DE8; color: #fff; border: none; }
+.sc-btn { flex: 1; height: 46px; border-radius: 999px; font-size: 15px; font-weight: 600; }
+.sc-btn.cancel { background: #fff; color: #4b5563; border: 1px solid #e6e8ee; }
+.sc-btn.primary { background: #2B6DE8; color: #fff; border: 1px solid #2B6DE8; }
 .sc-btn:active { opacity: .85; }
 .share-copy {
   width: 100%; height: 44px; margin-top: 14px; border-radius: 10px; background: #2B6DE8;
@@ -587,7 +588,7 @@ svg { display: block; }
 .sort-dir-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; font-size: 14px; color: #4b5563; }
 .sort-dir { display: flex; gap: 8px; }
 .sd-btn {
-  height: 32px; padding: 0 14px; border-radius: 16px; background: #f5f7fb;
+  height: 32px; padding: 0 14px; border-radius: 16px; background: #fff;
   font-size: 13px; color: #4b5563; border: 1px solid #e6e8ee;
 }
 .sd-btn.active { background: #2B6DE8; border-color: #2B6DE8; color: #fff; }
