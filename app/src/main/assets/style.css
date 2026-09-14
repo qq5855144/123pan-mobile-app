@@ -310,8 +310,7 @@ svg { display: block; }
 /* 账号操作菜单 */
 .account-actions { margin-bottom: 18px; }
 .account-action-item {
-  display: flex; align-items: center; justify-content: space-between; padding: 14px 18px;
-  border: 1px solid #e6e8ee; border-radius: 999px; background: #fff; font-size: 15px; color: #4b5563; cursor: pointer;
+  display: flex; align-items: center; justify-content: space-between; height: 36px; padding: 0 18px; border: 1px solid #e6e8ee; border-radius: 999px; background: #fff; font-size: 15px; color: #4b5563; cursor: pointer;
 }
 .account-action-item + .account-action-item { margin-top: 8px; }
 .account-action-item:active { opacity: .85; }
@@ -332,14 +331,12 @@ svg { display: block; }
 .sheet-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px 8px; margin-bottom: 20px; }
 .sheet-grid-item { display: flex; align-items: center; justify-content: center; font-size: 12px; color: #4b5563; cursor: pointer; }
 .sheet-grid-item .sgi-icon {
-  width: 100%; height: 56px; border-radius: 999px; display: flex; align-items: center;
-  justify-content: center; background: #fff; border: 1px solid #e6e8ee; color: #4b5563; font-size: 13px; font-weight: 500;
+  width: 100%; height: 36px; border-radius: 999px; display: flex; align-items: center; justify-content: center; background: #fff; border: 1px solid #e6e8ee; color: #4b5563; font-size: 13px; font-weight: 500;
 }
 .sheet-grid-item.warn .sgi-icon { background: #fdecec; border-color: #fdecec; color: #e5484d; }
 .sheet-grid-item.primary .sgi-icon { background: #eaf1ff; border-color: #eaf1ff; color: #2B6DE8; font-weight: 600; }
 .sheet-item.cancel {
-  height: 46px; display: flex; align-items: center; justify-content: center;
-  border-radius: 999px; background: #fff; border: 1px solid #e6e8ee; font-size: 15px; color: #4b5563;
+  height: 36px; display: flex; align-items: center; justify-content: center; border-radius: 999px; background: #fff; border: 1px solid #e6e8ee; font-size: 15px; color: #4b5563;
 }
 
 /* ---------- 弹窗 ---------- */
@@ -359,11 +356,11 @@ svg { display: block; }
 .modal-panel input:focus { outline: none; border-color: #2B6DE8; }
 .modal-btns { display: flex; gap: 12px; margin-top: 20px; }
 .btn-plain {
-  flex: 1; height: 44px; border: 1px solid #e6e8ee; border-radius: 999px; background: #fff; font-size: 15px; color: #4b5563;
+  flex: 1; height: 36px; border: 1px solid #e6e8ee; border-radius: 999px; background: #fff; font-size: 15px; color: #4b5563;
 }
-.modal-btns .btn-primary { flex: 1; height: 44px; margin-top: 0; font-size: 15px; border-radius: 999px; }
+.modal-btns .btn-primary { flex: 1; height: 36px; margin-top: 0; font-size: 15px; border-radius: 999px; }
 .btn-ghost-row {
-  width: 100%; height: 44px; margin-bottom: 10px; border-radius: 999px; background: #fff; border: 1px solid #e6e8ee; color: #2B6DE8; font-size: 15px; font-weight: 500;
+  width: 100%; height: 36px; margin-bottom: 10px; border-radius: 999px; background: #fff; border: 1px solid #e6e8ee; color: #2B6DE8; font-size: 15px; font-weight: 500;
 }
 .btn-ghost-row:active { background: #eaf1ff; }
 
@@ -397,8 +394,7 @@ svg { display: block; }
 .sc-pill { position: relative; cursor: pointer; }
 .sc-pill input { position: absolute; opacity: 0; width: 100%; height: 100%; margin: 0; cursor: pointer; }
 .sc-pill span {
-  display: flex; align-items: center; justify-content: center; height: 38px;
-  font-size: 13px; color: #4b5563; border: 1px solid #e6e8ee; border-radius: 999px; background: #fff; transition: all .15s ease;
+  display: flex; align-items: center; justify-content: center; height: 36px; font-size: 13px; color: #4b5563; border: 1px solid #e6e8ee; border-radius: 999px; background: #fff; transition: all .15s ease;
 }
 .sc-pill input:checked + span {
   color: #2B6DE8; background: #eaf1ff; border-color: #2B6DE8; font-weight: 600;
@@ -410,7 +406,7 @@ svg { display: block; }
 }
 .sc-custom input:focus { outline: none; border-color: #2B6DE8; background: #fff; }
 .sc-btns { display: flex; gap: 12px; margin-top: 22px; }
-.sc-btn { flex: 1; height: 46px; border-radius: 999px; font-size: 15px; font-weight: 600; }
+.sc-btn { flex: 1; height: 36px; border-radius: 999px; font-size: 15px; font-weight: 600; }
 .sc-btn.cancel { background: #fff; color: #4b5563; border: 1px solid #e6e8ee; }
 .sc-btn.primary { background: #2B6DE8; color: #fff; border: 1px solid #2B6DE8; }
 .sc-btn:active { opacity: .85; }
@@ -578,15 +574,14 @@ svg { display: block; }
 #top-sort:active { background: #f2f3f5; }
 .sort-opts { display: flex; flex-direction: column; gap: 8px; margin-bottom: 14px; }
 .sort-opt {
-  display: flex; align-items: center; justify-content: space-between; padding: 12px 18px;
-  border-radius: 999px; background: #fff; border: 1px solid #e6e8ee; font-size: 14px; color: #4b5563; cursor: pointer;
+  display: flex; align-items: center; justify-content: space-between; height: 36px; padding: 0 18px; border-radius: 999px; background: #fff; border: 1px solid #e6e8ee; font-size: 14px; color: #4b5563; cursor: pointer;
 }
 .sort-opt.active { background: #eaf1ff; border-color: #cfe0ff; color: #2B6DE8; font-weight: 600; }
 .sort-opt.active::after { content: '✓'; font-size: 13px; }
 .sort-dir-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; font-size: 14px; color: #4b5563; }
 .sort-dir { display: flex; gap: 8px; }
 .sd-btn {
-  height: 32px; padding: 0 14px; border-radius: 16px; background: #fff;
+  height: 36px; padding: 0 14px; border-radius: 999px; background: #fff;
   font-size: 13px; color: #4b5563; border: 1px solid #e6e8ee;
 }
 .sd-btn.active { background: #2B6DE8; border-color: #2B6DE8; color: #fff; }
