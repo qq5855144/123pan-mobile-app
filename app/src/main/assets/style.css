@@ -439,6 +439,13 @@ svg { display: block; }
   background: #f5f7fb; transition: color .2s, background .2s;
 }
 .transfer-del:active { background: #fdecec; color: #e5484d; }
+.transfer-act {
+  flex: 0 0 auto; height: 30px; padding: 0 12px; margin-left: 8px; border-radius: 15px;
+  background: #eaf1ff; color: #2B6DE8; font-size: 13px; font-weight: 500;
+}
+.transfer-act:active { opacity: .75; }
+.transfer-act.t-resume { background: #e9f9ef; color: #22a45c; }
+.transfer-act.t-retry { background: #fff3e6; color: #e08c00; }
 
 /* ---------- 多选（整理）模式 ---------- */
 .file-check {

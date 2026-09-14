@@ -306,21 +306,20 @@
   }
   function addTransfer(t) {
     if (!state.transfers) state.transfers = [];
-    state.transfers.unshift({ id: t.id || -1, name: t.name || '', size: t.size, status: t.status || 'downloading', done: 0, total: t.total || 0, stream: !!t.stream, time: Date.now() });
+    state.transfers.unshift({ id: t.id || -1, name: t.name || '', size: t.size, status: t.status || 'downloading', done: 0, total: t.total || 0, stream: !!t.stream, link: t.link || '', stale: false, failMsg: '', time: Date.now() });
     saveTransfers();
   }
+  // st: 1=下载中 2=暂停 8=成功 16=失败
   function statusLabel(st, done, total) {
     st = Number(st);
     if (st === 8) return '已完成';
     if (st === 16) return '失败';
-    // 下载中（1）/ 其他挂起态：显示进度百分比
+    // 已完成 / 失败之外：按状态显示进度百分比（2=暂停，1=下载中）
     var tot = Number(total);
-    if (tot > 0) {
-      var p = Math.floor((Number(done) || 0) / tot * 100);
-      if (p > 100) p = 100;
-      return '下载中 ' + p + '%';
-    }
-    return '下载中';
+    var p = tot > 0 ? Math.floor((Number(done) || 0) / tot * 100) : -1;
+    if (p > 100) p = 100;
+    if (st === 2) return (p >= 0 ? '已暂停 ' + p + '%' : '已暂停');
+    return (p >= 0 ? '下载中 ' + p + '%' : '下载中');
   }
   function startProgressPolling() {
     if (state.progTimer) return;
@@ -342,7 +341,12 @@
       if (bridge.streamingTasks) {
         try { slist = JSON.parse(bridge.streamingTasks() || '[]'); } catch (e) {}
       }
-      if ((!Array.isArray(list) || !list.length) && (!Array.isArray(slist) || !slist.length)) return;
+      var slistOk = Array.isArray(slist);
+      var hasPending = false;
+      (state.transfers || []).forEach(function (t) {
+        if (t.stream && Number(t.id) >= 900000000 && (t.status === 'downloading' || t.status === 'paused')) hasPending = true;
+      });
+      if ((!Array.isArray(list) || !list.length) && (!slistOk || !slist.length) && !hasPending) return;
       if (!state.transfers) return;
       var nameToStatus = {};
       (list).forEach(function (dl) { nameToStatus[dl.name] = dl; });
@@ -350,13 +354,23 @@
       state.transfers.forEach(function (t) {
         var hit = null;
         // 自研流式任务优先按 id 匹配 streaming 列表
-        if (t.stream && slist.length) {
+        if (t.stream && slistOk && slist.length) {
           slist.forEach(function (x) { if (Number(x.id) === Number(t.id)) hit = x; });
         }
         if (!hit && t.id >= 0 && list.length) {
           list.forEach(function (x) { if (Number(x.id) === Number(t.id)) hit = x; });
         }
         if (!hit && t.name) hit = nameToStatus[t.name] || null;
+        if (!hit) {
+          // 流式任务在原生侧已不存在（应用重启 / 任务被清理）：标记失效，避免永远停留在“下载中”
+          if (t.stream && Number(t.id) >= 900000000 && slistOk && (t.status === 'downloading' || t.status === 'paused')) {
+            t.status = 'failed';
+            t.stale = true;
+            t.failMsg = '任务已失效';
+            changed = true;
+          }
+          return;
+        }
         if (hit) {
           if (t.status === 'completed') return;
           var st = Number(hit.status);
@@ -380,7 +394,9 @@
             }
           }
           else if (st === 16) { t.status = 'failed'; }
+          else if (st === 2 && t.stream) { t.status = 'paused'; }
           else { t.status = 'downloading'; }
+          if (t.stale) { t.stale = false; t.failMsg = ''; }
           changed = true;
         }
       });
@@ -409,16 +425,26 @@
       var sz = fmtSize(t.size);
       var label = t.status === 'downloading'
         ? statusLabel(1, t.done, t.total)
-        : (t.status === 'completed' ? '已完成' : (t.status === 'failed' ? '失败' : mapStatusText(t.status)));
+        : (t.status === 'completed' ? '已完成'
+        : (t.status === 'failed' ? (t.failMsg || '失败')
+        : (t.status === 'paused' ? statusLabel(2, t.done, t.total) : mapStatusText(t.status))));
       var doneOk = (t.status === 'completed');
       // 已完成任务显示真实文件类型图标，未完成任务显示下载图标
       var icName = doneOk ? iconForName(nm) : 'download';
+      // 主操作按钮：下载中→暂停 / 已暂停→继续 / 失败→重试 / 已完成→打开
+      var mainBtn;
+      if (doneOk) mainBtn = '<button class="transfer-open" data-i="' + i + '">打开</button>';
+      else if (t.status === 'downloading') mainBtn = t.stream
+        ? '<button class="transfer-act t-pause" data-i="' + i + '">暂停</button>'
+        : '<button class="transfer-open disabled" data-i="' + i + '">打开</button>';
+      else if (t.status === 'paused') mainBtn = '<button class="transfer-act t-resume" data-i="' + i + '">继续</button>';
+      else if (t.status === 'failed') mainBtn = '<button class="transfer-act t-retry" data-i="' + i + '">重试</button>';
+      else mainBtn = '<button class="transfer-open disabled" data-i="' + i + '">打开</button>';
       html += '<div class="transfer-item">'
         + '<div class="transfer-ic ic-' + icName + '" data-icon="' + icName + '"></div>'
         + '<div class="transfer-info"><div class="transfer-name">' + esc(nm) + '</div>'
         + '<div class="transfer-sub">' + esc(sz) + ' · ' + esc(label) + '</div></div>'
-        + '<button class="transfer-open' + (doneOk ? '' : ' disabled') + '" data-i="' + i + '">打开</button>'
-        + '<button class="transfer-del" data-i="' + i + '" title="删除记录">×</button>'
+        + mainBtn + '<button class="transfer-del" data-i="' + i + '" title="删除记录">×</button>'
         + '</div>';
     }
     box.innerHTML = html;
@@ -436,13 +462,75 @@
         }
       });
     });
-    // 删除按钮：确认后从传输列表移除该条记录
+    // 暂停：原生任务在下一个数据块边界退出并保留断点（继续时可断点续传）
+    box.querySelectorAll('.t-pause').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var idx = Number(btn.getAttribute('data-i'));
+        var t = state.transfers && state.transfers[idx];
+        if (!t) return;
+        if (bridge && bridge.pauseDownload && Number(t.id) >= 0) { try { bridge.pauseDownload(Number(t.id)); } catch (e) {} }
+        t.status = 'paused';
+        saveTransfers();
+        renderTransfers();
+        startProgressPolling();
+        toast('已暂停下载（可继续断点续传）');
+      });
+    });
+    // 继续：从断点处续传
+    box.querySelectorAll('.t-resume').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var idx = Number(btn.getAttribute('data-i'));
+        var t = state.transfers && state.transfers[idx];
+        if (!t) return;
+        if (bridge && bridge.resumeDownload && Number(t.id) >= 0) { try { bridge.resumeDownload(Number(t.id)); } catch (e) {} }
+        t.status = 'downloading';
+        saveTransfers();
+        renderTransfers();
+        startProgressPolling();
+        toast('继续下载中...');
+      });
+    });
+    // 重试：原生任务仍在则从断点重试；任务已失效（应用重启等）时用记录的链接重新发起
+    box.querySelectorAll('.t-retry').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var idx = Number(btn.getAttribute('data-i'));
+        var t = state.transfers && state.transfers[idx];
+        if (!t) return;
+        if (t.stale) {
+          if (t.link && bridge && bridge.downloadStream) {
+            var nid = -1;
+            try { nid = Number(bridge.downloadStream(t.link, t.name, Number(t.size) || 0)); } catch (e) {}
+            if (nid >= 0) {
+              t.id = nid; t.stale = false; t.failMsg = ''; t.done = 0;
+              t.total = Number(t.size) || 0; t.status = 'downloading';
+              saveTransfers();
+              renderTransfers();
+              startProgressPolling();
+              toast('已重新发起下载');
+              return;
+            }
+          }
+          toast('任务已失效，请重新下载该文件');
+          return;
+        }
+        if (bridge && bridge.retryDownload && Number(t.id) >= 0) { try { bridge.retryDownload(Number(t.id)); } catch (e) {} }
+        t.status = 'downloading';
+        saveTransfers();
+        renderTransfers();
+        startProgressPolling();
+        toast('正在重试...');
+      });
+    });
+    // 删除按钮：结束原生任务（未完成的半成品文件一并删除）并从传输列表移除该条记录
     box.querySelectorAll('.transfer-del').forEach(function (btn) {
       btn.addEventListener('click', function (e) {
         e.stopPropagation();
         var idx = Number(btn.getAttribute('data-i'));
         var t = state.transfers && state.transfers[idx];
         if (!t) return;
+        if (t.stream && Number(t.id) >= 900000000 && bridge && bridge.deleteDownloadTask) {
+          try { bridge.deleteDownloadTask(Number(t.id)); } catch (e2) {}
+        }
         state.transfers.splice(idx, 1);
         saveTransfers();
         renderTransfers();
@@ -1155,7 +1243,7 @@
           toast('下载启动失败，请重试');
           return; // 不回退，避免 DownloadManager 假完成造成损坏文件
         }
-        addTransfer({ id: genId, name: fname, size: fsize, total: fsize, status: 'downloading', stream: isStream });
+        addTransfer({ id: genId, name: fname, size: fsize, total: fsize, status: 'downloading', stream: isStream, link: link });
         startProgressPolling();
         toast('已加入下载任务');
       } else {
