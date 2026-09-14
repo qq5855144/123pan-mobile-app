@@ -1575,12 +1575,27 @@
       });
   }
 
-  // 上传：触发隐藏的 <input type=file>（需原生 setShowFileChooser 支持）
+  // 上传入口：弹出方式选择（文件 / 文件夹，文件夹保留目录结构）
   function doUpload() {
+    show($('upload-modal'));
+  }
+  // 选择单个/多个文件上传（原生接管文件选择并回传路径）
+  function pickUploadFile() {
+    hide($('upload-modal'));
     var inp = $('upload-input');
     if (!inp) return;
     toast('请选择要上传的文件');
     inp.click();
+  }
+  // 选择文件夹上传：由原生 SAF 目录树遍历并回传文件列表（保留目录结构）
+  function pickUploadFolder() {
+    hide($('upload-modal'));
+    if (bridge && bridge.pickFolder) {
+      toast('请选择要上传的文件夹');
+      bridge.pickFolder();
+    } else {
+      toast('当前环境不支持文件夹上传');
+    }
   }
 
   // 原生侧完成文件选择后回调：paths 为本地临时文件路径数组。
@@ -1668,6 +1683,98 @@
     scheduleNextUpload();
   };
 
+  // 文件夹上传：原生遍历所选目录后回传 [{rel,name,path,size}]（rel 含所选根目录名，保持层级）
+  // 流程：逐层创建云端目录（获取 fileId）→ 全部文件按目标目录入队上传
+  window.__onFolderPicked = function (files) {
+    var list = (typeof files === 'string') ? JSON.parse(files) : files;
+    if (!list || !list.length) { toast('所选文件夹为空或读取失败'); return; }
+    var dirs = {};
+    list.forEach(function (f) {
+      var rel = f.rel || '';
+      var idx = rel.lastIndexOf('/');
+      if (idx > 0) {
+        var segs = rel.substring(0, idx).split('/');
+        var acc = '';
+        segs.forEach(function (s) {
+          if (!s) return;
+          acc = acc ? acc + '/' + s : s;
+          dirs[acc] = true;
+        });
+      }
+    });
+    var dirArr = Object.keys(dirs);
+    dirArr.sort(function (a, b) { return a.split('/').length - b.split('/').length; });
+    var map = {};
+    map[''] = state.currentDir;
+    var di = 0;
+    function nextDir() {
+      if (di >= dirArr.length) { enqueueFolderFiles(list, map); return; }
+      var rel = dirArr[di];
+      var segs = rel.split('/');
+      var dirName = segs[segs.length - 1];
+      var parentRel = segs.length > 1 ? segs.slice(0, -1).join('/') : '';
+      var parentId = map[parentRel];
+      if (!(parentId >= 0)) { map[rel] = -1; di++; nextDir(); return; }
+      ensureFolder(parentId, dirName, function (fid) {
+        map[rel] = fid;
+        di++;
+        nextDir();
+      });
+    }
+    nextDir();
+  };
+  // 文件夹内的文件全部入队（目录创建失败的降级放置到当前目录）
+  function enqueueFolderFiles(list, map) {
+    if (!state.upQueue) state.upQueue = [];
+    var ok = 0, miss = 0;
+    list.forEach(function (f) {
+      var rel = f.rel || '';
+      var idx = rel.lastIndexOf('/');
+      var parentRel = idx > 0 ? rel.substring(0, idx) : '';
+      var pid = map[parentRel];
+      if (!(pid >= 0)) { pid = state.currentDir; miss++; }
+      state.upQueue.push({ id: -1, name: f.name || rel.split('/').pop(), path: f.path, parentId: pid, size: f.size || 0, done: 0, total: 0, status: 'waiting', failMsg: '', time: Date.now() });
+      ok++;
+    });
+    saveUpQueue();
+    toast('文件夹已加入上传队列（' + ok + '个文件' + (miss > 0 ? '；' + miss + '个文件因目录创建失败放至当前目录' : '') + '）');
+    scheduleNextUpload();
+    if (state.view === 'transfers') renderTransfers();
+  }
+  // 在 parentId 下确保存在名为 name 的文件夹：先尝试创建；已存在则查询列表复用
+  function ensureFolder(parentId, name, cb) {
+    var body = JSON.stringify({
+      driveId: 0, etag: '', fileName: name, parentFileId: parentId, size: 0,
+      type: 1, duplicate: 1, NotReuse: true, event: 'newCreateFolder', operateType: 1
+    });
+    api('POST', API.mkdir, body, true, function (d) {
+      var fid = -1;
+      if (d && d.code === 0 && d.data) {
+        var info = d.data.Info || d.data.info;
+        if (info) fid = Number(info.FileId || info.fileId || -1);
+        if (!(fid >= 0)) fid = Number(d.data.fileId || d.data.FileId || -1);
+      }
+      if (fid >= 0) { cb(fid); return; }
+      // 创建失败或未返回 id（可能同名已存在）：查询父目录列表复用
+      listFolder(parentId, function (items) {
+        var hit = -1;
+        (items || []).forEach(function (it) {
+          if (it && Number(it.Type) === 1 && it.FileName === name) hit = Number(it.FileId);
+        });
+        cb(hit >= 0 ? hit : -1);
+      });
+    });
+  }
+  // 查询某目录下的列表（用于复用已存在文件夹）
+  function listFolder(parentId, cb) {
+    var params = 'driveId=0&limit=200&next=0&orderBy=file_name&orderDirection=asc'
+      + '&parentFileId=' + parentId + '&trashed=false&Page=1&OnlyLookAbnormalFile=0';
+    api('GET', API.list + '?' + params, '', true, function (d) {
+      var items = [];
+      if (d && d.data && d.data.InfoList) items = d.data.InfoList;
+      cb(items);
+    });
+  }
   // ---------- 分享管理（我的分享 / 接收分享 / 转存） ----------
   // 分享接口域候选：优先项目主域，异常时自动切换官方域
   var SHARE_DOMAINS = ['https://api.123pan.cn', 'https://yun.123pan.com'];
@@ -2369,13 +2476,12 @@
     $('newfolder-ok').addEventListener('click', doNewFolder);
     $('newfolder-input').addEventListener('keydown', function (e) { if (e.key === 'Enter') doNewFolder(); });
     // 上传
+    // 上传：弹出方式选择（文件 / 文件夹）；文件由原生接管，文件夹走 SAF 目录树
     $('tool-upload').addEventListener('click', doUpload);
+    $('up-choice-file').addEventListener('click', pickUploadFile);
+    $('up-choice-folder').addEventListener('click', pickUploadFolder);
     $('upload-input').addEventListener('change', function () {
-      var files = this.files;
-      if (!files || !files.length) return;
-      var names = [];
-      for (var i = 0; i < Math.min(files.length, 5); i++) names.push(files[i].name);
-      toast('已选择 ' + files.length + ' 个文件（' + names.join('、') + '…）\n原生上传通道待接入');
+      // 文件选择实际由原生 onShowFileChooser 接管；此处仅清理 input 值（防重复触发）
       this.value = '';
     });
     // 整理（多选）：进入多选模式

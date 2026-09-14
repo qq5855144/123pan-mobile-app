@@ -79,6 +79,7 @@ public class MainActivity extends Activity {
 
     private ValueCallback<Uri[]> uploadMessage;
     private static final int FILE_CHOOSER_REQUEST = 1001;
+    private static final int FOLDER_PICK_REQUEST = 1002;
 
     private String loginuuid = UUID.randomUUID().toString().replace("-", "");
     private String deviceType = "X12";
@@ -145,6 +146,9 @@ public class MainActivity extends Activity {
                 if (uploadMessage != null) { uploadMessage.onReceiveValue(null); }
                 uploadMessage = filePathCallback;
                 Intent intent = fileChooserParams.createIntent();
+                if (fileChooserParams.getMode() == FileChooserParams.MODE_OPEN_MULTIPLE) {
+                    intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
+                }
                 try {
                     startActivityForResult(intent, FILE_CHOOSER_REQUEST);
                 } catch (Exception e) {
@@ -281,7 +285,27 @@ public class MainActivity extends Activity {
                 }
             });
         }
-    }
+
+        // 文件夹上传：SAF 目录树选择回调（后台线程遍历 + 拷贝，完成后再通知前端）
+        if (requestCode == FOLDER_PICK_REQUEST) {
+            final Uri treeUri = (data != null ? data.getData() : null);
+            if (treeUri == null) return;
+            executor.execute(new Runnable() {
+                @Override public void run() {
+                    final String jsList = buildFolderPickedJson(treeUri);
+                    handler.post(new Runnable() {
+                        @Override public void run() {
+                            if (webView != null) {
+                                webView.evaluateJavascript(
+                                    "window.__onFolderPicked&&window.__onFolderPicked(" + jsList + ");", null);
+                            }
+                        }
+                    });
+                }
+            });
+            return;
+        }
+}
 
     // 将 content:// URI 拷贝为外部缓存临时文件，返回可读路径
     private String copyUriToTemp(Uri uri) {
@@ -320,6 +344,103 @@ public class MainActivity extends Activity {
         }
         sb.append("]");
         return sb.toString();
+    }
+
+    // ============ 文件夹上传：SAF 目录树遍历 ============
+    // 遍历用户选择的目录树（DocumentsContract API，无第三方依赖），
+    // 把全部文件拷贝到应用缓存（保留相对路径结构，同名文件互不冲突），
+    // 生成 [{rel,name,path,size}] JSON 供前端按目录结构创建云端文件夹并依次入队上传。
+    private String buildFolderPickedJson(Uri treeUri) {
+        java.util.List<String[]> files = new java.util.ArrayList<String[]>();
+        try {
+            String rootId = android.provider.DocumentsContract.getTreeDocumentId(treeUri);
+            String rootName = queryDocName(treeUri, rootId);
+            if (rootName == null || rootName.isEmpty()) rootName = "upload_" + System.currentTimeMillis();
+            java.io.File outRoot = new java.io.File(getExternalCacheDir(), "updir_" + System.currentTimeMillis());
+            if (!outRoot.exists()) outRoot.mkdirs();
+            int[] cnt = new int[]{ 0 };
+            walkDocTree(treeUri, rootId, rootName, outRoot, files, cnt);
+        } catch (Exception e) {
+            Log.e("PAN", "buildFolderPickedJson fail: " + e, e);
+        }
+        StringBuilder sb = new StringBuilder("[");
+        for (int i = 0; i < files.size(); i++) {
+            if (i > 0) sb.append(",");
+            String[] f = files.get(i);
+            sb.append("{\"rel\":\"").append(json(f[0])).append("\"");
+            sb.append(",\"name\":\"").append(json(f[1])).append("\"");
+            sb.append(",\"path\":\"").append(json(f[2])).append("\"");
+            sb.append(",\"size\":").append(f[3]).append("}");
+        }
+        sb.append("]");
+        logDl("folder picked files=" + files.size());
+        return sb.toString();
+    }
+    // 递归遍历 SAF 目录树（最多 2000 个文件）
+    private void walkDocTree(Uri treeUri, String docId, String relPrefix, java.io.File outDir,
+                             java.util.List<String[]> out, int[] cnt) {
+        try {
+            Uri childrenUri = android.provider.DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, docId);
+            android.database.Cursor c = getContentResolver().query(childrenUri,
+                new String[]{ android.provider.DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                              android.provider.DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+                              android.provider.DocumentsContract.Document.COLUMN_MIME_TYPE,
+                              android.provider.DocumentsContract.Document.COLUMN_SIZE }, null, null, null);
+            if (c == null) return;
+            while (c.moveToNext()) {
+                if (cnt[0] >= 2000) break;
+                String cid = c.getString(0);
+                String cname = c.getString(1);
+                String ctype = c.getString(2);
+                if (cname == null || cname.isEmpty()) continue;
+                String rel = relPrefix + "/" + cname;
+                if (android.provider.DocumentsContract.Document.MIME_TYPE_DIR.equals(ctype)) {
+                    java.io.File sub = new java.io.File(outDir, cname);
+                    sub.mkdirs();
+                    walkDocTree(treeUri, cid, rel, sub, out, cnt);
+                } else {
+                    java.io.File dst = new java.io.File(outDir, cname);
+                    if (copyDocToFile(treeUri, cid, dst)) {
+                        out.add(new String[]{ rel, cname, dst.getAbsolutePath(), String.valueOf(dst.length()) });
+                        cnt[0]++;
+                    }
+                }
+            }
+            c.close();
+        } catch (Exception e) {
+            Log.e("PAN", "walkDocTree fail: " + e, e);
+        }
+    }
+    // 拷贝 SAF 文档到本地文件
+    private boolean copyDocToFile(Uri treeUri, String docId, java.io.File dst) {
+        try {
+            Uri docUri = android.provider.DocumentsContract.buildDocumentUriUsingTree(treeUri, docId);
+            java.io.InputStream in = getContentResolver().openInputStream(docUri);
+            if (in == null) return false;
+            java.io.FileOutputStream fos = new java.io.FileOutputStream(dst);
+            byte[] buf = new byte[8192];
+            int n;
+            while ((n = in.read(buf)) > 0) fos.write(buf, 0, n);
+            fos.flush(); fos.close(); in.close();
+            return true;
+        } catch (Exception e) {
+            Log.e("PAN", "copyDocToFile fail: " + e);
+            return false;
+        }
+    }
+    // 查询 SAF 文档的显示名（用于根目录命名）
+    private String queryDocName(Uri treeUri, String docId) {
+        try {
+            Uri docUri = android.provider.DocumentsContract.buildDocumentUriUsingTree(treeUri, docId);
+            android.database.Cursor c = getContentResolver().query(docUri,
+                new String[]{ android.provider.DocumentsContract.Document.COLUMN_DISPLAY_NAME }, null, null, null);
+            if (c != null && c.moveToFirst()) {
+                String n = c.getString(0);
+                c.close();
+                return n;
+            }
+        } catch (Exception ignore) { }
+        return null;
     }
 
     @Override
@@ -1491,6 +1612,21 @@ public class MainActivity extends Activity {
         return ut.id;
     }
 
+    /** 调起系统文件夹选择器（SAF 目录树），用于文件夹上传（保留目录结构） */
+    public void pickFolder() {
+        handler.post(new Runnable() {
+            @Override public void run() {
+                try {
+                    Intent it = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
+                    it.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                    startActivityForResult(it, FOLDER_PICK_REQUEST);
+                } catch (Exception e) {
+                    Log.e("PAN", "pickFolder fail: " + e, e);
+                    toast("无法打开文件夹选择器");
+                }
+            }
+        });
+    }
     /** 取消上传任务（写循环在下一块边界检查 cancelled 退出） */
     public void cancelUploadTask(final long taskId) {
         UpTask t = upTasks.get(taskId);
@@ -1806,6 +1942,9 @@ public class MainActivity extends Activity {
         }
         @JavascriptInterface
         public void cancelUploadTask(final long taskId) { act.cancelUploadTask(taskId); }
+        // 文件夹选择（SAF 目录树；用户选择后由原生遍历并回传文件列表）
+        @JavascriptInterface
+        public void pickFolder() { act.pickFolder(); }
 
         @JavascriptInterface
         public void openFile(final String name) {

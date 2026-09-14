@@ -348,6 +348,10 @@ svg { display: block; }
   flex: 1; height: 44px; border: 1px solid #e6e8ee; border-radius: 10px; background: #fff; font-size: 15px;
 }
 .modal-btns .btn-primary { flex: 1; height: 44px; margin-top: 0; font-size: 15px; }
+.btn-ghost-row {
+  width: 100%; height: 44px; margin-bottom: 10px; border-radius: 10px; background: #f5f7fb; color: #2B6DE8; font-size: 15px; font-weight: 500;
+}
+.btn-ghost-row:active { background: #eaf1ff; }
 
 /* 自定义确认弹窗（替代原生 confirm） */
 .cf-message {
