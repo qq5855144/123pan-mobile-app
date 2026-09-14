@@ -1969,11 +1969,12 @@ public class MainActivity extends Activity {
         return sb.length() > 300 ? sb.substring(0, 300) : sb.toString();
     }
 
-    // 计算应用缓存大小（cacheDir + filesDir），返回字节数
+    // 计算应用缓存大小（cacheDir + filesDir + 外部缓存），返回字节数
     private long calcCacheSize() {
         long total = 0;
         try { total += dirSize(getCacheDir()); } catch (Exception ignored) {}
         try { total += dirSize(getFilesDir()); } catch (Exception ignored) {}
+        try { total += dirSize(getExternalCacheDir()); } catch (Exception ignored) {}
         return total;
     }
     private long dirSize(File dir) {
@@ -1988,7 +1989,7 @@ public class MainActivity extends Activity {
         }
         return sum;
     }
-    // 清除应用缓存：WebView 缓存 + 应用私有缓存目录 + Cookie
+    // 清除应用缓存：WebView 缓存 + 应用私有缓存目录 + 外部缓存 + Cookie
     private void clearAppCache() {
         handler.post(new Runnable() {
             @Override public void run() {
@@ -2000,6 +2001,7 @@ public class MainActivity extends Activity {
         try { deleteChildren(getCacheDir()); } catch (Exception ignored) {}
         try { deleteDir(new File(getFilesDir(), "cache")); } catch (Exception ignored) {}
         try { deleteDir(new File(getFilesDir(), "app_webview")); } catch (Exception ignored) {}
+        try { deleteChildren(getExternalCacheDir()); } catch (Exception ignored) {}
     }
     private void deleteChildren(File dir) {
         if (dir == null || !dir.exists()) return;
