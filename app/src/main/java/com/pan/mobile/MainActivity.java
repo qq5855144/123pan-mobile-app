@@ -927,58 +927,9 @@ public class MainActivity extends Activity {
         } catch (Exception e) { return null; }
     }
 
-    // 诊断：把下载关键事件/异常写入公共 Download 目录的日志文件，便于 shell 读取排查。
-    // 用 MediaStore 写入（Android 10+ 无需写权限），保证 app 内能成功落盘到公共目录。
-    // ===== 调试日志开关 =====
-    // 默认关闭（避免在使用云盘时持续在公共 Download 目录产生 pan_dl_log.txt 文件）。
-    // 需要排障时可在“我的-调试日志”开关开启（写入 SharedPreferences debug_dl=true）。
-    private static final String PREF_DEBUG_DL = "debug_dl";
-    private boolean isDebugDlOn() { return prefs.getBoolean(PREF_DEBUG_DL, false); }
-    private void setDebugDl(boolean on) { prefs.edit().putBoolean(PREF_DEBUG_DL, on).apply(); }
+    // 正式版说明：日志仅输出到 Logcat（不再向公共 Download 目录写入任何调试文件）
     private void logDl(String msg) {
-        if (!isDebugDlOn()) return;             // 调试日志开关（默认关闭）
-        java.io.OutputStream os = null;
-        try {
-            String line = System.currentTimeMillis() + " " + msg + "\n";
-            Uri u = null;
-            try {
-                // 尝试打开已存在的日志文件（追加）
-                String[] proj = { android.provider.MediaStore.MediaColumns._ID };
-                android.database.Cursor c = getContentResolver().query(
-                    android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, proj,
-                    android.provider.MediaStore.MediaColumns.DISPLAY_NAME + "=?", 
-                    new String[]{"pan_dl_log.txt"}, null);
-                if (c != null) {
-                    if (c.moveToFirst()) {
-                        long id = c.getLong(0);
-                        u = android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI
-                            .buildUpon().appendPath(String.valueOf(id)).build();
-                    }
-                    c.close();
-                }
-            } catch (Exception ignore) {}
-            if (u != null) {
-                try {
-                    os = getContentResolver().openOutputStream(u, "wa");
-                } catch (Exception e) { os = null; }
-            }
-            if (os == null) {
-                android.content.ContentValues cv = new android.content.ContentValues();
-                cv.put(android.provider.MediaStore.Downloads.DISPLAY_NAME, "pan_dl_log.txt");
-                cv.put(android.provider.MediaStore.Downloads.MIME_TYPE, "text/plain");
-                cv.put(android.provider.MediaStore.Downloads.RELATIVE_PATH,
-                    android.os.Environment.DIRECTORY_DOWNLOADS);
-                u = getContentResolver().insert(
-                    android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, cv);
-                if (u != null) os = getContentResolver().openOutputStream(u, "wa");
-            }
-            if (os != null) {
-                os.write(line.getBytes("UTF-8"));
-                os.close();
-            }
-        } catch (Exception ignore) {
-            try { if (os != null) os.close(); } catch (Exception ignore2) {}
-        }
+        Log.d("PAN", msg);
     }
 
     // 从 MediaStore 条目查询物理绝对路径（_data），供"打开/安装"使用；查不到返回 null
@@ -1418,7 +1369,6 @@ public class MainActivity extends Activity {
                         org.json.JSONObject upJson = new org.json.JSONObject(upResp);
                         if (upJson.optInt("code", -1) != 0) {
                             msg = "upload_request 失败: " + upJson.optString("message");
-                            appendUploadLog(log.toString());
                             throw new IOException(msg);
                         }
                         org.json.JSONObject upData = upJson.getJSONObject("data");
@@ -1438,7 +1388,6 @@ public class MainActivity extends Activity {
                             // 服务端已按 MD5 复用，无需实际上传
                             msg = "上传成功（云端已有相同内容，已秒传复用，fileId=" + fileId + "）";
                             ok = "true";
-                            appendUploadLog(log.toString() + "REUSED\n");
                             throw new StopUpload(msg);
                         }
                         // ============ 2B) 大文件：分片上传（multipart，支持断点续传）============
@@ -1453,13 +1402,11 @@ public class MainActivity extends Activity {
                                 msg = runMultipartUpload(ut, f, size, etag, fname, parentFileId,
                                     bucket, storageNode, uploadKey, uploadId, fileId, sliceSize, log);
                                 ok = "true";
-                                appendUploadLog(log.toString() + "==> SUCCESS(multipart): " + msg + "\n");
                                 throw new StopUpload(msg);
                             } catch (MultipartFallback mf) {
                                 // 仅在"未开始传输任何分片数据"的早期失败时回退整对象直传；
                                 // 大文件（>64MB）无法整读内存，直接报错让用户重试（继续走断点续传）。
                                 if (size > UPLOAD_FALLBACK_MAX) {
-                                    appendUploadLog(log.toString());
                                     throw new IOException("分片上传初始化失败：" + mf.getMessage());
                                 }
                                 log.append("[mp] 初始化失败，回退整对象直传：").append(mf.getMessage()).append("\n");
@@ -1502,7 +1449,6 @@ public class MainActivity extends Activity {
                         org.json.JSONObject authJson = new org.json.JSONObject(authResp);
                         if (authJson.optInt("code", -1) != 0) {
                             msg = "整对象上传鉴权失败: " + authJson.optString("message");
-                            appendUploadLog(log.toString());
                             throw new IOException(msg);
                         }
                         org.json.JSONObject presigned = authJson.getJSONObject("data")
@@ -1515,7 +1461,6 @@ public class MainActivity extends Activity {
                         }
                         if (putUrl.isEmpty()) {
                             msg = "整对象预签名 URL 为空";
-                            appendUploadLog(log.toString());
                             throw new IOException(msg);
                         }
                         log.append("[2]presigned PUT url=").append(putUrl).append("\n");
@@ -1568,7 +1513,6 @@ public class MainActivity extends Activity {
                         log.append("\n");
                         if (putCode < 200 || putCode >= 300) {
                             msg = "整对象上传失败 HTTP " + putCode;
-                            appendUploadLog(log.toString());
                             throw new IOException(msg);
                         }
                         Log.d("PAN", "upload object done (" + putCode + ")");
@@ -1591,7 +1535,6 @@ public class MainActivity extends Activity {
                         org.json.JSONObject closeJson = new org.json.JSONObject(closeResp);
                         if (closeJson.optInt("code", -1) != 0) {
                             msg = "上传收尾失败: " + closeJson.optString("message");
-                            appendUploadLog(log.toString());
                             throw new IOException(msg);
                         }
                         // 从 /v2 响应中解析最终落盘的 file_info.FileId，用于更准确的成功回执
@@ -1611,7 +1554,6 @@ public class MainActivity extends Activity {
 
                         msg = "上传成功：" + fname + "（" + (size / 1024) + "KB, fileId=" + fileId + "）";
                         ok = "true";
-                        appendUploadLog(log.toString() + "==> SUCCESS: " + msg + "\n");
                     }
                 } catch (StopUpload su) {
                     // 成功提前终止（如秒传复用），ok 已置 true，保留成功消息
@@ -2027,26 +1969,6 @@ public class MainActivity extends Activity {
         return sb.length() > 300 ? sb.substring(0, 300) : sb.toString();
     }
 
-    /** 将上传过程的完整日志追加写入公共 Downloads（MediaStore，兼容 Android 11+）。 */
-    private void appendUploadLog(String content) {
-        try {
-            android.content.ContentValues cv = new android.content.ContentValues();
-            cv.put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, "pan_upload_result.txt");
-            cv.put(android.provider.MediaStore.MediaColumns.MIME_TYPE, "text/plain");
-            cv.put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS);
-            android.net.Uri uri = getContentResolver().insert(
-                android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, cv);
-            if (uri != null) {
-                java.io.OutputStream os = getContentResolver().openOutputStream(uri, "wa");
-                os.write(content.getBytes("UTF-8"));
-                os.write("\n----------------------------------------\n".getBytes("UTF-8"));
-                os.close();
-            }
-        } catch (Exception e) {
-            Log.e("PAN", "write upload result fail: " + e);
-        }
-    }
-
     // 计算应用缓存大小（cacheDir + filesDir），返回字节数
     private long calcCacheSize() {
         long total = 0;
@@ -2240,13 +2162,6 @@ public class MainActivity extends Activity {
 
         @JavascriptInterface
         public String getLoginuuid() { return act.loginuuid; }
-
-        // 调试日志开关：默认关闭（避免产生 pan_dl_log.txt）。排障时可在“我的”页开启。
-        @JavascriptInterface
-        public boolean getDebugDl() { return act.isDebugDlOn(); }
-
-        @JavascriptInterface
-        public void setDebugDl(final boolean on) { act.setDebugDl(on); }
 
         @JavascriptInterface
         public long download(final String url, final String filename) {
