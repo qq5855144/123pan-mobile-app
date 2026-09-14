@@ -203,6 +203,9 @@
     'arrow-down': '<path d="M12 3v12M6 9l6 6 6-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
     user: '<path d="M20 21a8 8 0 0 0-16 0M12 13a5 5 0 1 0 0-10 5 5 0 0 0 0 10z" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
     download: '<path d="M12 3v12M6 11l6 6 6-6M4 21h16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
+    dl2: '<path d="M6 5l6 5 6-5M6 12l6 5 6-5M5 20h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
+    ul2: '<path d="M5 4h14M6 19l6-5 6 5M6 12l6-5 6 5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
+    transfer: '<path d="M12 3v8M8.3 6.7L12 3l3.7 3.7M12 21v-8M8.3 17.3L12 21l3.7-3.7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
     rename: '<path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7M18.5 2.5a2.1 2.1 0 0 1 3 3L12 15l-4 1 1-4z" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
     trash: '<path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6zM10 11v6M14 11v6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
     share: '<path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8M16 6l-4-4-4 4M12 2v13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
@@ -537,7 +540,7 @@
         ubtn = '<button class="transfer-act t-upretry" data-u="' + u + '">重试</button>';
       }
       html += '<div class="transfer-item">'
-        + '<div class="transfer-ic ic-upload" data-icon="upload"></div>'
+        + '<div class="transfer-ic ic-up2" data-icon="ul2"></div>'
         + '<div class="transfer-info"><div class="transfer-name">' + esc(unm) + '</div>'
         + '<div class="transfer-sub">' + esc(usz) + ' · ' + esc(ulabel) + '</div></div>'
         + ubtn + '<button class="up-del" data-u="' + u + '" title="移除记录">×</button>'
@@ -553,8 +556,8 @@
         : (t.status === 'failed' ? (t.failMsg || '失败')
         : (t.status === 'paused' ? statusLabel(2, t.done, t.total) : mapStatusText(t.status))));
       var doneOk = (t.status === 'completed');
-      // 已完成任务显示真实文件类型图标，未完成任务显示下载图标
-      var icName = doneOk ? iconForName(nm) : 'download';
+      // 已完成任务显示真实文件类型图标，未完成任务显示双下箭头下载图标
+      var icName = doneOk ? iconForName(nm) : 'dl2';
       // 主操作按钮：下载中→暂停 / 已暂停→继续 / 失败→重试 / 已完成→打开
       var mainBtn;
       if (doneOk) mainBtn = '<button class="transfer-open" data-i="' + i + '">打开</button>';

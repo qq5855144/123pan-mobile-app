@@ -429,6 +429,9 @@ svg { display: block; }
 .transfer-ic.ic-code { background: #f0eef8; color: #6d5bd0; }
 .transfer-ic.ic-doc { background: #f0f6ff; color: #2B6DE8; }
 .transfer-ic svg { width: 22px; height: 22px; }
+/* 传输任务分类图标：下载类=双下箭头（蓝）、上传类=双上箭头（橙） */
+.transfer-ic.ic-dl2 { background: #eaf3ff; color: #2B6DE8; }
+.transfer-ic.ic-up2 { background: #fff3e6; color: #f08c00; }
 .transfer-info { flex: 1; min-width: 0; }
 .transfer-name { font-size: 15px; color: #1a1a1a; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .transfer-sub { font-size: 12px; color: #9aa2b1; margin-top: 3px; }
