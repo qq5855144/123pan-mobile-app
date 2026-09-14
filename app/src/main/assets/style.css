@@ -331,7 +331,7 @@ svg { display: block; }
 .sheet-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px 8px; margin-bottom: 20px; }
 .sheet-grid-item { display: flex; align-items: center; justify-content: center; font-size: 12px; color: #4b5563; cursor: pointer; }
 .sheet-grid-item .sgi-icon {
-  width: 100%; height: 36px; border-radius: 999px; display: flex; align-items: center; justify-content: center; background: #fff; border: 1px solid #e6e8ee; color: #4b5563; font-size: 13px; font-weight: 500;
+  width: 100%; height: 48px; border-radius: 999px; display: flex; align-items: center; justify-content: center; background: #fff; border: 1px solid #e6e8ee; color: #4b5563; font-size: 13px; font-weight: 500;
 }
 .sheet-grid-item.warn .sgi-icon { background: #fdecec; border-color: #fdecec; color: #e5484d; }
 .sheet-grid-item.primary .sgi-icon { background: #eaf1ff; border-color: #eaf1ff; color: #2B6DE8; font-weight: 600; }
