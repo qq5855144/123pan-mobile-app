@@ -433,12 +433,12 @@ svg { display: block; }
   background: #eaf1ff; color: #2B6DE8; font-size: 13px; font-weight: 500;
 }
 .transfer-open.disabled { background: #f1f3f7; color: #b0b6c2; }
-.transfer-del {
+.transfer-del, .up-del {
   flex: 0 0 auto; width: 30px; height: 30px; margin-left: 6px; border-radius: 50%;
   color: #b0b6c2; font-size: 18px; line-height: 1; display: flex; align-items: center; justify-content: center;
   background: #f5f7fb; transition: color .2s, background .2s;
 }
-.transfer-del:active { background: #fdecec; color: #e5484d; }
+.transfer-del:active, .up-del:active { background: #fdecec; color: #e5484d; }
 .transfer-act {
   flex: 0 0 auto; height: 30px; padding: 0 12px; margin-left: 8px; border-radius: 15px;
   background: #eaf1ff; color: #2B6DE8; font-size: 13px; font-weight: 500;
@@ -446,6 +446,8 @@ svg { display: block; }
 .transfer-act:active { opacity: .75; }
 .transfer-act.t-resume { background: #e9f9ef; color: #22a45c; }
 .transfer-act.t-retry { background: #fff3e6; color: #e08c00; }
+.transfer-act.t-upcancel { background: #fdecec; color: #e5484d; }
+.transfer-act.t-upretry { background: #fff3e6; color: #e08c00; }
 
 /* ---------- 多选（整理）模式 ---------- */
 .file-check {

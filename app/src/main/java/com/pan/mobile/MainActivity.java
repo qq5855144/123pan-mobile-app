@@ -96,6 +96,10 @@ public class MainActivity extends Activity {
     private final java.util.Map<Long, String> streamTaskUris =
         new java.util.concurrent.ConcurrentHashMap<>();
     private long nextTaskId = 900000000L;
+    // 上传任务表：taskId -> UpTask（支持取消 / 队列管理）。任务 id 区间 800000000+，与下载任务（900000000+）区分
+    private final java.util.Map<Long, UpTask> upTasks =
+        new java.util.concurrent.ConcurrentHashMap<>();
+    private long nextUpId = 800000000L;
     private String baseHeaders =
         "platform=android;app-version=61;x-app-version=2.4.0;user-agent=123pan/v2.4.0("
         + osVersion + ";Xiaomi)";
@@ -476,6 +480,16 @@ public class MainActivity extends Activity {
         volatile boolean running;   // 执行线程存续标志
         volatile android.net.Uri uri; // MediaStore uri（暂停后继续复用）
         volatile String realPath;     // 成功后的真实路径
+    }
+    /** 上传任务实体（支持取消） */
+    static class UpTask {
+        long id;
+        String localPath;     // 本地文件路径（临时拷贝）
+        long parentFileId;    // 上传父目录
+        volatile int status;  // 1=上传中 2=已取消 8=成功 16=失败
+        volatile boolean cancelled;
+        volatile long done;   // 已上传字节
+        volatile long total;  // 总字节
     }
     /** 启动下载线程（runDlTask 内部有 running 去重保护） */
     private void startDlThread(final DlTask t) {
@@ -1228,13 +1242,21 @@ public class MainActivity extends Activity {
      *  1) POST file/upload_request  获取预签名上传信息
      *  2) 据返回上传文件字节
      *  3) 结束/确认（如需要）
-     * 结果通过 window.__onUploadDone(ok,msg) 回传前端。
+     * 结果通过 window.__onUploadResult(id,ok,msg) 回传前端（进度：window.__onUploadProgress(id,done,total)）。
      */
-    private void uploadFile(final String localPath, final long parentFileId,
-                            final String callback) {
+    // 创建上传任务并立即返回任务 id（供上传队列管理 / 取消）；实际上传在后台线程执行
+    private long uploadFile(final String localPath, final long parentFileId) {
+        final UpTask ut = new UpTask();
+        ut.id = nextUpId++;
+        ut.localPath = localPath;
+        ut.parentFileId = parentFileId;
+        ut.status = 1;
+        upTasks.put(ut.id, ut);
+        logDl("upload enqueue id=" + ut.id + " file=" + localPath + " parent=" + parentFileId);
         executor.execute(new Runnable() {
             @Override public void run() {
                 String ok = "false", msg = "";
+                if (ut.cancelled) { ut.status = 2; fireUploadResult(ut, false, "已取消上传"); return; }
                 try {
                     File f = new File(localPath);
                     if (!f.exists() || !f.isFile()) {
@@ -1361,17 +1383,23 @@ public class MainActivity extends Activity {
                         final int upChunk = 262144; // 256KB，兼顾真实进度反馈与无谓回调开销
                         int sent = 0;
                         while (sent < totalLen) {
+                            if (ut.cancelled) { // 用户取消：关闭输出流并中止上传
+                                try { pos.close(); } catch (Exception ignore) {}
+                                throw new StopUpload("已取消上传");
+                            }
                             int len = Math.min(upChunk, totalLen - sent);
                             pos.write(all, sent, len);
                             sent += len;
                             final int fdone = sent;
-                            // 进度回调需在 UI 线程执行（操作 WebView）
+                            // 进度回调需在 UI 线程执行（操作 WebView）；同时更新任务表进度（供队列展示）
+                            ut.done = fdone;
+                            ut.total = totalLen;
                             handler.post(new Runnable() {
                                 @Override public void run() {
-                                    if (webView != null && callback != null && !callback.isEmpty()) {
+                                    if (webView != null) {
                                         webView.evaluateJavascript(
-                                            "window['" + callback + "']&&window['" + callback + "']("
-                                            + fdone + "," + totalLen + ");", null);
+                                            "window.__onUploadProgress&&window.__onUploadProgress("
+                                            + ut.id + "," + fdone + "," + totalLen + ");", null);
                                     }
                                 }
                             });
@@ -1442,12 +1470,15 @@ public class MainActivity extends Activity {
                     msg = e.getMessage();
                 }
                 final String fmsg = msg, fok = ok;
+                if (ut.cancelled && !"true".equals(fok)) { ut.status = 2; }
+                else { ut.status = "true".equals(fok) ? 8 : 16; }
+                logDl("upload#" + ut.id + " result ok=" + fok + " msg=" + fmsg);
                 handler.post(new Runnable() {
                     @Override public void run() {
                         if (webView != null) {
                             webView.evaluateJavascript(
-                                "window.__onUploadDone&&window.__onUploadDone(" + fok + ","
-                                + (fmsg == null ? "\"\"" : bindJson(json(fmsg == null ? "" : fmsg))) + ");", null);
+                                "window.__onUploadResult&&window.__onUploadResult(" + ut.id + "," + fok + ","
+                                + org.json.JSONObject.quote(fmsg == null ? "" : fmsg) + ");", null);
                         }
                         if (!"false".equals(fok) || true) {
                             // 调试：上传在未完全打通时亦把响应打出来，便于核对协议
@@ -1455,6 +1486,29 @@ public class MainActivity extends Activity {
                         }
                     }
                 });
+            }
+        });
+        return ut.id;
+    }
+
+    /** 取消上传任务（写循环在下一块边界检查 cancelled 退出） */
+    public void cancelUploadTask(final long taskId) {
+        UpTask t = upTasks.get(taskId);
+        if (t == null) return;
+        t.cancelled = true;
+        if (t.status == 1) t.status = 2;
+        logDl("upload#" + taskId + " cancel requested");
+    }
+    /** 向前端发送上传结果回调（统一收口；用于任务未真正开始即被取消等提前返回场景） */
+    private void fireUploadResult(final UpTask ut, final boolean okf, final String msg) {
+        final String fok = okf ? "true" : "false";
+        handler.post(new Runnable() {
+            @Override public void run() {
+                if (webView != null) {
+                    String jsonMsg = org.json.JSONObject.quote(msg == null ? "" : msg);
+                    webView.evaluateJavascript(
+                        "window.__onUploadResult&&window.__onUploadResult(" + ut.id + "," + fok + "," + jsonMsg + ");", null);
+                }
             }
         });
     }
@@ -1745,10 +1799,13 @@ public class MainActivity extends Activity {
         }
 
         @JavascriptInterface
-        public void uploadFiles(final String localPath, final long parentFileId,
-                                final String callback) {
-            act.uploadFile(localPath, parentFileId, callback);
+        // 上传任务（队列化）：创建任务并返回任务 id（>=800000000；失败 -1）
+        public long uploadFileTask(final String localPath, final long parentFileId) {
+            try { return act.uploadFile(localPath, parentFileId); }
+            catch (Exception e) { return -1; }
         }
+        @JavascriptInterface
+        public void cancelUploadTask(final long taskId) { act.cancelUploadTask(taskId); }
 
         @JavascriptInterface
         public void openFile(final String name) {

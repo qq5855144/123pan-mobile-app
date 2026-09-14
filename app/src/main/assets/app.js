@@ -106,6 +106,7 @@
     qrPaused: false,          // App 在后台时 true，暂停轮询
     qrExpired: false,          // 二维码是否已过期
     transfers: loadTransfers(), // 下载任务列表 [{name,size,status,time}]
+    upQueue: loadUpQueue(),       // 上传任务队列（串行调度 [{name,path,status,done,total}]）
     progTimer: null,          // 下载进度轮询定时器
     searching: false,         // 是否处于全局搜索态
     searchKeyword: '',        // 当前搜索关键词
@@ -304,6 +305,99 @@
   function saveTransfers() {
     try { localStorage.setItem('pan_transfers', JSON.stringify(state.transfers)); } catch (e) {}
   }
+  // ---------- 上传队列（串行调度 / 取消 / 重试） ----------
+  function loadUpQueue() {
+    try {
+      var raw = localStorage.getItem('pan_upqueue');
+      var arr = raw ? JSON.parse(raw) : [];
+      if (!Array.isArray(arr)) return [];
+      // 应用重启后原生上传任务已不存在：未完成的挂起任务标记为失败，避免永远“等待上传”
+      for (var i = 0; i < arr.length; i++) {
+        var t = arr[i];
+        if (t && (t.status === 'waiting' || t.status === 'uploading')) {
+          t.status = 'failed';
+          t.failMsg = '任务已失效（应用重启）';
+        }
+      }
+      return arr;
+    } catch (e) { return []; }
+  }
+  function saveUpQueue() {
+    try { localStorage.setItem('pan_upqueue', JSON.stringify(state.upQueue)); } catch (e) {}
+  }
+  // 上传入队（原生文件选择回调 / 后续文件夹批量上传都经此入口）
+  function enqueueUpload(path) {
+    if (!state.upQueue) state.upQueue = [];
+    var name = String(path).split('/').pop() || ('file_' + Date.now());
+    state.upQueue.push({ id: -1, name: name, path: path, parentId: state.currentDir, size: 0, done: 0, total: 0, status: 'waiting', failMsg: '', time: Date.now() });
+    saveUpQueue();
+    toast('已加入上传队列：' + name);
+    scheduleNextUpload();
+  }
+  // 串行调度：同一时刻仅执行一个上传任务
+  function scheduleNextUpload() {
+    var q = state.upQueue || [];
+    var i;
+    for (i = 0; i < q.length; i++) { if (q[i].status === 'uploading') return; }
+    for (i = 0; i < q.length; i++) {
+      if (q[i].status === 'waiting') { startUploadItem(q[i]); return; }
+    }
+    hideUploadProgress();
+    if (state.view === 'transfers') renderTransfers();
+  }
+  function startUploadItem(t) {
+    if (!(bridge && bridge.uploadFileTask)) {
+      t.status = 'failed';
+      t.failMsg = '上传通道未就绪';
+      saveUpQueue();
+      if (state.view === 'transfers') renderTransfers();
+      return;
+    }
+    t.status = 'uploading';
+    t.done = 0;
+    t.failMsg = '';
+    saveUpQueue();
+    if (state.view === 'transfers') renderTransfers();
+    showUploadProgress(t.name, 0, 0);
+    var nid = -1;
+    try { nid = Number(bridge.uploadFileTask(t.path, Number(t.parentId) || 0)); } catch (e) {}
+    if (nid >= 0) { t.id = nid; saveUpQueue(); }
+    else {
+      t.status = 'failed';
+      t.failMsg = '上传启动失败';
+      saveUpQueue();
+      if (state.view === 'transfers') renderTransfers();
+      scheduleNextUpload();
+    }
+  }
+  function cancelUploadItem(t) {
+    if (!t) return;
+    var wasUploading = (t.status === 'uploading');
+    if (wasUploading && Number(t.id) >= 0 && bridge && bridge.cancelUploadTask) {
+      try { bridge.cancelUploadTask(Number(t.id)); } catch (e) {}
+    }
+    t.status = 'cancelled';
+    t.failMsg = '';
+    saveUpQueue();
+    if (state.view === 'transfers') renderTransfers();
+    toast('已取消上传：' + (t.name || ''));
+    // 等待中的任务没有原生线程，取消后立即调度下一个；上传中则等原生回调后再调度
+    if (!wasUploading) scheduleNextUpload();
+  }
+  function retryUploadItem(t) {
+    if (!t) return;
+    t.status = 'waiting';
+    t.done = 0;
+    t.failMsg = '';
+    saveUpQueue();
+    if (state.view === 'transfers') renderTransfers();
+    scheduleNextUpload();
+  }
+  function statusUpLabel(t) {
+    var tot = Number(t.total) || 0;
+    var p = tot > 0 ? Math.floor((Number(t.done) || 0) * 100 / tot) : -1;
+    return p >= 0 ? '上传中 ' + p + '%' : '上传中';
+  }
   function addTransfer(t) {
     if (!state.transfers) state.transfers = [];
     state.transfers.unshift({ id: t.id || -1, name: t.name || '', size: t.size, status: t.status || 'downloading', done: 0, total: t.total || 0, stream: !!t.stream, link: t.link || '', stale: false, failMsg: '', time: Date.now() });
@@ -411,14 +505,40 @@
     var empty = $('transfer-empty');
     var arr = state.transfers || loadTransfers();
     state.transfers = arr;
+    var ups = state.upQueue || loadUpQueue();
+    state.upQueue = ups;
     if (!box) return;
-    if (!arr.length) {
+    if (!arr.length && !ups.length) {
       if (empty) show(empty);
       box.innerHTML = '';
       return;
     }
     if (empty) hide(empty);
     var html = '';
+    // 上传任务（队列）显示在前
+    for (var u = 0; u < ups.length; u++) {
+      var ut = ups[u];
+      var unm = ut.name || '';
+      var usz = fmtSize(ut.total || ut.size);
+      var ubtn = '';
+      var ulabel;
+      if (ut.status === 'waiting') ulabel = '等待上传';
+      else if (ut.status === 'uploading') ulabel = statusUpLabel(ut);
+      else if (ut.status === 'done') ulabel = '已完成';
+      else if (ut.status === 'cancelled') ulabel = '已取消';
+      else ulabel = ut.failMsg || '上传失败';
+      if (ut.status === 'waiting' || ut.status === 'uploading') {
+        ubtn = '<button class="transfer-act t-upcancel" data-u="' + u + '">取消</button>';
+      } else if (ut.status === 'failed' || ut.status === 'cancelled') {
+        ubtn = '<button class="transfer-act t-upretry" data-u="' + u + '">重试</button>';
+      }
+      html += '<div class="transfer-item">'
+        + '<div class="transfer-ic ic-upload" data-icon="upload"></div>'
+        + '<div class="transfer-info"><div class="transfer-name">' + esc(unm) + '</div>'
+        + '<div class="transfer-sub">' + esc(usz) + ' · ' + esc(ulabel) + '</div></div>'
+        + ubtn + '<button class="up-del" data-u="' + u + '" title="移除记录">×</button>'
+        + '</div>';
+    }
     for (var i = 0; i < arr.length; i++) {
       var t = arr[i];
       var nm = t.name || '';
@@ -535,6 +655,35 @@
         saveTransfers();
         renderTransfers();
         toast('已删除传输记录「' + (t.name || '') + '」');
+      });
+    });
+    // 上传任务：取消 / 重试 / 移除记录
+    box.querySelectorAll('.t-upcancel').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var idx = Number(btn.getAttribute('data-u'));
+        var t = state.upQueue && state.upQueue[idx];
+        if (!t) return;
+        cancelUploadItem(t);
+      });
+    });
+    box.querySelectorAll('.t-upretry').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var idx = Number(btn.getAttribute('data-u'));
+        var t = state.upQueue && state.upQueue[idx];
+        if (!t) return;
+        retryUploadItem(t);
+      });
+    });
+    box.querySelectorAll('.up-del').forEach(function (btn) {
+      btn.addEventListener('click', function (e) {
+        e.stopPropagation();
+        var idx = Number(btn.getAttribute('data-u'));
+        var t = state.upQueue && state.upQueue[idx];
+        if (!t) return;
+        if (t.status === 'uploading') { toast('上传中，请先取消再移除'); return; }
+        state.upQueue.splice(idx, 1);
+        saveUpQueue();
+        renderTransfers();
       });
     });
   }
@@ -1445,24 +1594,10 @@
     }
   };
 
-  var _upBusy = false;
   function doUploadOne(path) {
     if (!path) return;
-    var fname = String(path).split('/').pop() || ('file_' + Date.now());
-    // 原生上传通道：由 NativeBridge.uploadFiles 读取本地文件并完成 123pan 上传
-    if (bridge && bridge.uploadFiles) {
-      var cbName = '_cb_up_' + Date.now() + '_' + Math.floor(Math.random()*1e6);
-      // 原生在 PUT 阶段通过该回调名上报进度：window[cbName](done, total)
-      window[cbName] = function (done, total) {
-        showUploadProgress(fname, done, total);
-      };
-      // 初始显示进度浮层（准备中）
-      showUploadProgress(fname, 0, 0);
-      bridge.uploadFiles(path, state.currentDir, cbName);
-      return;
-    }
-    // 兜底：仅提示（不应到达）
-    toast('上传通道未就绪：' + fname);
+    // 上传队列化：先入队，由调度器串行执行（统一进入传输页管理）
+    enqueueUpload(path);
   }
   // ---------- 上传进度浮层 ----------
   function showUploadProgress(name, done, total) {
@@ -1491,15 +1626,46 @@
     var fill = $('up-bar-fill');
     if (fill) fill.style.width = '0%';
   }
-  // 原生上传结果回调
-  window.__onUploadDone = function (ok, msg) {
-    hideUploadProgress();
-    if (ok) {
-      toast(msg || '上传成功');
-      if (state.view === 'files') loadList();
-    } else {
-      toast('上传失败：' + (msg || '未知错误'));
+  // 上传进度回调（原生任务 id 维度；节流：进度百分比变化才重绘）
+  window.__onUploadProgress = function (taskId, done, total) {
+    var t = null;
+    (state.upQueue || []).forEach(function (x) { if (Number(x.id) === Number(taskId)) t = x; });
+    if (!t || t.status === 'cancelled') return;
+    t.done = Number(done) || 0;
+    if (Number(total) > 0) t.total = Number(total);
+    var pct = t.total > 0 ? Math.floor(t.done * 100 / t.total) : 0;
+    if (t._lastPct === pct) return;
+    t._lastPct = pct;
+    saveUpQueue();
+    if (state.view === 'transfers') renderTransfers();
+    showUploadProgress(t.name, t.done, t.total);
+  };
+  // 上传结果回调（成功 / 失败 / 取消 统一收口）
+  window.__onUploadResult = function (taskId, ok, msg) {
+    var t = null;
+    (state.upQueue || []).forEach(function (x) { if (Number(x.id) === Number(taskId)) t = x; });
+    if (t) {
+      if (t.status !== 'cancelled') {
+        if (ok) {
+          t.status = 'done';
+          t.done = t.total || t.done;
+          if (t.total <= 0) t.total = t.done;
+          toast('上传成功：' + (t.name || ''));
+          if (state.view === 'files') loadList();
+        } else {
+          t.status = 'failed';
+          t.failMsg = msg || '上传失败';
+          toast('上传失败：' + (t.name || '') + (msg ? '（' + msg + '）' : ''));
+        }
+      }
+      saveUpQueue();
+      if (state.view === 'transfers') renderTransfers();
     }
+    // 队列中已无上传中任务：隐藏进度浮层
+    var busy = false;
+    (state.upQueue || []).forEach(function (x) { if (x.status === 'uploading') busy = true; });
+    if (!busy) hideUploadProgress();
+    scheduleNextUpload();
   };
 
   // ---------- 分享管理（我的分享 / 接收分享 / 转存） ----------
@@ -2135,6 +2301,10 @@
     state.transfers = state.transfers || [];
     state.transfers.length = 0;
     try { saveTransfers(); } catch (e) {}
+    try { localStorage.removeItem('pan_upqueue'); } catch (e) {}
+    state.upQueue = state.upQueue || [];
+    state.upQueue.length = 0;
+    try { saveUpQueue(); } catch (e) {}
     try { localStorage.removeItem('pan_download_cache'); } catch (e) {}
     if (bridge && bridge.clearCache) {
       try { bridge.clearCache(); } catch (e) {}
