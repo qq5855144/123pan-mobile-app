@@ -2195,11 +2195,14 @@ public class MainActivity extends Activity {
                 out.put("name", rel.optString("name", ""));
                 out.put("current", currentVersionName(a));
                 String url = "";
+                long apkSize = 0;
                 org.json.JSONArray assets = rel.optJSONArray("assets");
                 if (assets != null && assets.length() > 0) {
                   url = assets.getJSONObject(0).optString("browser_download_url", "");
+                  apkSize = assets.getJSONObject(0).optLong("size", 0);
                 }
                 out.put("url", url);
+                out.put("size", apkSize);
                 result = out.toString();
               } catch (Exception e) {
                 try {

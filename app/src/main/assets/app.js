@@ -657,6 +657,19 @@
           toast('任务已失效，请重新下载该文件');
           return;
         }
+        //系统下载任务（下载更新等）：原生不支持重试，直接按记录链接重新发起
+        if (!t.stream && t.link && bridge && bridge.download) {
+          var nid2 = -1;
+          try { nid2 = Number(bridge.download(t.link, t.name)); } catch (e2) {}
+          if (nid2 > 0) {
+            t.id = nid2; t.done = 0; t.status = 'downloading'; t.failMsg = '';
+            saveTransfers();
+            renderTransfers();
+            startProgressPolling();
+            toast('已重新发起下载');
+            return;
+          }
+        }
         if (bridge && bridge.retryDownload && Number(t.id) >= 0) { try { bridge.retryDownload(Number(t.id)); } catch (e) {} }
         t.status = 'downloading';
         saveTransfers();
@@ -2197,7 +2210,15 @@
     var fname = '123pan-mobile-' + (info.version || 'new') + '.apk';
     try {
       var id = bridge && bridge.download ? bridge.download(info.url, fname) : 0;
-      if (Number(id) > 0) toast('下载完成后可到传输页打开安装');
+      if (Number(id) > 0) {
+        //注册到传输列表（系统下载任务）：轮询同步进度与完成状态，完成后点「打开」直接安装
+        addTransfer({ id: Number(id), name: fname, size: Number(info.size) || 0, total: Number(info.size) || 0, status: 'downloading', stream: false, link: info.url });
+        startProgressPolling();
+        if (state.view === 'transfers') renderTransfers();
+        toast('已加入下载任务，完成后可在传输页打开安装');
+      } else {
+        toast('下载启动失败，请稍后重试');
+      }
     } catch (e) {
       toast('下载失败：' + (e && e.message ? e.message : e));
     }
@@ -2226,7 +2247,7 @@
       return;
     }
     if (!state.autoUpdate && !manual) return; //启动检查时开关已被关闭：不打扰
-    state.updateInfo = { version: latest, url: info.url || '' };
+    state.updateInfo = { version: latest, url: info.url || '', size: Number(info.size) || 0 };
     $('upd-message').textContent = '发现新版本 v' + latest + '（当前 v' + cur + '），是否下载安装包？';
     show($('update-modal'));
   };
