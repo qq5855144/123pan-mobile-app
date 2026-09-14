@@ -435,6 +435,13 @@ svg { display: block; }
   border-radius: 12px; background: #f1f3f6; color: #5a6b8a; font-size: 12px; font-weight: 500;
   white-space: nowrap;
 }
+/* 传输页子页签：下载 / 上传 */
+.transfer-tabs { display: flex; gap: 10px; padding: 2px 2px 12px; }
+.ttab {
+  flex: 1; height: 36px; border: 1px solid #e8ecf3; border-radius: 12px;
+  background: #fff; color: #5a6b8a; font-size: 14px; font-weight: 500;
+}
+.ttab.active { background: #eaf1ff; border-color: #cfe0ff; color: #2B6DE8; font-weight: 600; }
 .transfer-info { flex: 1; min-width: 0; }
 .transfer-name { font-size: 15px; color: #1a1a1a; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .transfer-sub { font-size: 12px; color: #9aa2b1; margin-top: 3px; }

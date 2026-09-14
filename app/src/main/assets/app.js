@@ -107,6 +107,7 @@
     qrExpired: false,          // 二维码是否已过期
     transfers: loadTransfers(), // 下载任务列表 [{name,size,status,time}]
     upQueue: loadUpQueue(),       // 上传任务队列（串行调度 [{name,path,status,done,total}]）
+    transferTab: (function () { try { return localStorage.getItem('pan_ttab') === 'upload' ? 'upload' : 'download'; } catch (e) { return 'download'; } })(), // 传输页子页签：download/upload
     progTimer: null,          // 下载进度轮询定时器
     searching: false,         // 是否处于全局搜索态
     searchKeyword: '',        // 当前搜索关键词
@@ -203,7 +204,7 @@
     'arrow-down': '<path d="M12 3v12M6 9l6 6 6-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
     user: '<path d="M20 21a8 8 0 0 0-16 0M12 13a5 5 0 1 0 0-10 5 5 0 0 0 0 10z" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
     download: '<path d="M12 3v12M6 11l6 6 6-6M4 21h16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
-    transfer: '<path d="M12 3v8M8.3 6.7L12 3l3.7 3.7M12 21v-8M8.3 17.3L12 21l3.7-3.7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
+    transfer: '<path d="M8.5 6v8.8M5.5 14.8L8.5 17.8l3-3M15.5 18v-8.8M12.5 9.2L15.5 6.2l3 3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
     rename: '<path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7M18.5 2.5a2.1 2.1 0 0 1 3 3L12 15l-4 1 1-4z" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
     trash: '<path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6zM10 11v6M14 11v6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
     share: '<path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8M16 6l-4-4-4 4M12 2v13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
@@ -513,15 +514,26 @@
     var ups = state.upQueue || loadUpQueue();
     state.upQueue = ups;
     if (!box) return;
-    if (!arr.length && !ups.length) {
+    var tab = state.transferTab === 'upload' ? 'upload' : 'download';
+    var list = (tab === 'upload') ? ups : arr;
+    // 同步子页签高亮
+    var tbD = $('ttab-download'), tbU = $('ttab-upload');
+    if (tbD) tbD.classList.toggle('active', tab !== 'upload');
+    if (tbU) tbU.classList.toggle('active', tab === 'upload');
+    // 空态文案随子页签变化
+    var et = $('transfer-empty-title');
+    if (et) et.textContent = tab === 'upload' ? '暂无上传任务' : '暂无下载任务';
+    var es = $('transfer-empty-sub');
+    if (es) es.textContent = tab === 'upload' ? '上传任务将在此实时显示' : '下载文件保存在系统下载目录';
+    if (!list.length) {
       if (empty) show(empty);
       box.innerHTML = '';
       return;
     }
     if (empty) hide(empty);
     var html = '';
-    // 上传任务（队列）显示在前
-    for (var u = 0; u < ups.length; u++) {
+    // 上传任务（队列）
+    for (var u = 0; tab === 'upload' && u < ups.length; u++) {
       var ut = ups[u];
       var unm = ut.name || '';
       var usz = fmtSize(ut.total || ut.size);
@@ -544,7 +556,7 @@
         + ubtn + '<button class="up-del" data-u="' + u + '" title="移除记录">×</button>'
         + '</div>';
     }
-    for (var i = 0; i < arr.length; i++) {
+    for (var i = 0; tab !== 'upload' && i < arr.length; i++) {
       var t = arr[i];
       var nm = t.name || '';
       var sz = fmtSize(t.size);
@@ -2483,6 +2495,14 @@
     document.querySelectorAll('#tabbar .tab').forEach(function (tab) {
       tab.addEventListener('click', function () {
         switchView(tab.getAttribute('data-view'));
+      });
+    });
+    // 传输页子页签切换（下载 / 上传）
+    document.querySelectorAll('#view-transfers .ttab').forEach(function (b) {
+      b.addEventListener('click', function () {
+        state.transferTab = b.getAttribute('data-ttab') === 'upload' ? 'upload' : 'download';
+        try { localStorage.setItem('pan_ttab', state.transferTab); } catch (e) {}
+        renderTransfers();
       });
     });
     // 登录（统一官方登录页）
