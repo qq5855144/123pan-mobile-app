@@ -1757,28 +1757,57 @@ public class MainActivity extends Activity {
                         long fileId = upData.optLong("FileId", 0);
                         long sliceSize = upData.optLong("SliceSize", 5L * 1024 * 1024);
                         boolean reuse = upData.optBoolean("Reuse", false);
+                        int uploadFileStatus = upData.optInt("UploadFileStatus", 0);
+                        org.json.JSONObject reuseInfo = upData.optJSONObject("Info");
                         log.append("  bucket=").append(bucket).append(" node=").append(storageNode)
                            .append(" key=").append(uploadKey).append(" uploadId=").append(uploadId)
                            .append(" fileId=").append(fileId).append(" slice=").append(sliceSize)
-                           .append(" reuse=").append(reuse).append("\n");
+                           .append(" reuse=").append(reuse).append(" status=").append(uploadFileStatus)
+                           .append(" info=").append(reuseInfo == null ? "(none)"
+                               : ("fileId=" + reuseInfo.optLong("FileId", 0))).append("\n");
 
-                        if (reuse) {
-                            // 服务端已按 MD5 复用，无需实际上传
-                            msg = "上传成功（云端已有相同内容，已秒传复用，fileId=" + fileId + "）";
+                        // 【2026-09-16 根因修复】秒传（Reuse）仅在服务端同时返回 Info 落盘证明时才可信：
+                        //   - 官方 Web 上传引擎（生产包 module 38709）：仅当 `Reuse && Info` 才按秒传完成，
+                        //     否则按真实上传继续（不复用声明）；
+                        //   - rclone-123pan 实测：`Reuse=true` 且无 Info / FileId=0 时，
+                        //     文件往往并未真正出现在目标目录，盲目报成功即"假成功"。
+                        if (reuse && reuseInfo != null && reuseInfo.optLong("FileId", 0) > 0) {
+                            msg = "上传成功（云端已有相同内容，已秒传复用，fileId="
+                                + reuseInfo.optLong("FileId", 0) + "）";
                             ok = "true";
                             throw new StopUpload(msg);
                         }
+                        if (reuse) {
+                            // Reuse 未被落盘证明：先核验父目录中是否真能查到该对象（对齐 rclone inspectUpload），
+                            // 查得到按成功处理；查不到则降级为真实上传，绝不直接报成功。
+                            log.append("[1] warn: Reuse=true 但无 Info 落盘证明，先核验父目录\n");
+                            Log.d("PAN", "reuse without Info -> verify visible in parent");
+                            org.json.JSONObject visible = findVisibleUploadedFile(parentFileId, fname, size, etag, fileId);
+                            if (visible != null) {
+                                long vid = visible.optLong("FileId", fileId);
+                                msg = "上传成功（云端已有相同内容，已秒传复用，fileId=" + vid + "）";
+                                ok = "true";
+                                throw new StopUpload(msg);
+                            }
+                            log.append("[1] warn: 父目录未见落盘对象，降级真实上传\n");
+                            Log.d("PAN", "reuse without Info and not visible -> real upload");
+                        }
+                        if (uploadKey.isEmpty()) {
+                            // 无 Key 无法进行任何真实上传/预签名，且秒传未被证实：失败关闭，绝不假报成功
+                            throw new IOException("upload_request 未返回上传会话（Key 为空），本次未上传，请重试");
+                        }
                         // ============ 2B) 大文件：分片上传（multipart，支持断点续传）============
-                        // 协议对齐 OlyMarco/123pan-uploader-cli（platform=web 实测可用）：
+                        // 协议对齐官方 Web 生产包（2026-09-16 抓包核对）：
                         //   upload_request -> s3_list_upload_parts(初始化/查已传分片)
                         //   -> s3_repare_upload_parts_batch -> PUT(part)
-                        //   -> s3_list_upload_parts(确认) -> s3_complete_multipart_upload -> upload_complete
-                        // 说明：旧版"假成功"的根因是漏掉了上传前对 s3_list_upload_parts 的初始化
-                        // 调用（S3 multipart 会话未真正建立），本实现已补齐。
+                        //   -> s3_list_upload_parts(确认) -> upload_complete/v2 ->（必要时）轮询 upload_complete/result
+                        // 说明：s3_complete_multipart_upload 与 upload_complete(v1) 均已被官方废弃
+                        //（后者在官方生产包中出现 0 次），继续调用会返回 code:0 但不真正归档——
+                        // 这正是"假成功"的根因之一，已整体替换为 /v2 + 轮询确认落盘。
                         if (size >= UPLOAD_SLICE_THRESHOLD) {
                             try {
                                 msg = runMultipartUpload(ut, f, size, etag, fname, parentFileId,
-                                    bucket, storageNode, uploadKey, uploadId, fileId, sliceSize, log);
+                                    bucket, storageNode, uploadKey, uploadId, fileId, sliceSize, uploadFileStatus, log);
                                 ok = "true";
                                 throw new StopUpload(msg);
                             } catch (MultipartFallback mf) {
@@ -1895,40 +1924,23 @@ public class MainActivity extends Activity {
                         }
                         Log.d("PAN", "upload object done (" + putCode + ")");
 
-                        // 2c) 完成归档（官方 Web 用 /v2 端点，body 精确对齐官方 hook 抓包）
-                        //   {fileId,bucket,fileSize,key,isMultipart:false,uploadId,StorageNode}
-                        // isMultipart:false 标记整对象直传（而非分片），是真正归档的关键。
-                        String closeBody = "{\"fileId\":" + fileId
-                            + ",\"bucket\":\"" + bucket
-                            + "\",\"fileSize\":" + size
-                            + ",\"key\":\"" + uploadKey
-                            + "\",\"isMultipart\":false"
-                            + ",\"uploadId\":\"" + uploadId
-                            + "\",\"StorageNode\":\"" + storageNode + "\"}";
-                        Log.d("PAN", "[3]upload_complete/v2 req body=" + closeBody);
-                        String closeResp = httpRequest("POST",
-                            API + "/b/api/file/upload_complete/v2", closeBody, true);
-                        Log.d("PAN", "[3]upload_complete/v2 resp=" + closeResp);
-                        log.append("[3]upload_complete/v2: ").append(closeResp).append("\n");
-                        org.json.JSONObject closeJson = new org.json.JSONObject(closeResp);
-                        if (closeJson.optInt("code", -1) != 0) {
-                            msg = "上传收尾失败: " + closeJson.optString("message");
-                            throw new IOException(msg);
-                        }
-                        // 从 /v2 响应中解析最终落盘的 file_info.FileId，用于更准确的成功回执
+                        // 2c) 完成归档（官方现行协议 upload_complete/v2；无 file_info 时轮询 result，绝不假成功）
+                        //   body: {fileId, bucket, fileSize, key, isMultipart:false, uploadId, StorageNode}
+                        //   isMultipart:false 标记整对象直传（而非分片）；对齐官方 Web module 38709 与 rclone 实测。
+                        org.json.JSONObject closeJson = completeUploadAndWait(bucket, uploadKey, uploadId, storageNode,
+                            fileId, size, false, uploadFileStatus, ut, log, "whole");
                         org.json.JSONObject fin = closeJson.optJSONObject("data");
-                        if (fin != null) {
-                            org.json.JSONObject fileInfo = fin.optJSONObject("file_info");
-                            if (fileInfo != null) {
-                                long realFileId = fileInfo.optLong("FileId", fileId);
-                                String realName = fileInfo.optString("FileName", fname);
-                                log.append("[3]归档 fileId=").append(realFileId)
-                                   .append(" name=").append(realName)
-                                   .append(" parent=").append(fileInfo.optLong("ParentFileId", parentFileId))
-                                   .append("\n");
-                                fileId = realFileId;
-                            }
+                        org.json.JSONObject fileInfo = fin == null ? null : fin.optJSONObject("file_info");
+                        if (fileInfo == null) {
+                            // 未拿到落盘证明：判定失败（此前会误报"上传成功"）
+                            throw new IOException("归档未确认（file_info 缺失），文件可能未落盘，请重试");
                         }
+                        long realFileId = fileInfo.optLong("FileId", fileId);
+                        log.append("[3]归档 fileId=").append(realFileId)
+                           .append(" name=").append(fileInfo.optString("FileName", fname))
+                           .append(" parent=").append(fileInfo.optLong("ParentFileId", parentFileId))
+                           .append("\n");
+                        fileId = realFileId;
 
                         msg = "上传成功：" + fname + "（" + (size / 1024) + "KB, fileId=" + fileId + "）";
                         ok = "true";
@@ -2011,7 +2023,10 @@ public class MainActivity extends Activity {
     /**
      * 大文件分片上传（multipart）＋断点续传。
      * 流程：s3_list_upload_parts(初始化/查已传分片) -> 循环[s3_repare_upload_parts_batch -> PUT(part)]
-     *    -> s3_list_upload_parts(确认) -> s3_complete_multipart_upload -> upload_complete。
+     *    -> s3_list_upload_parts(确认) -> upload_complete/v2 ->（必要时）轮询 upload_complete/result。
+     * 【2026-09-16 修复】收尾改用官方现行协议：POST upload_complete/v2（isMultipart:true，7 字段），
+     * 响应无 file_info 时轮询 GET upload_complete/result 直至 file_info 出现；
+     * 不再调用已废弃的 s3_complete_multipart_upload / upload_complete(v1)（"假成功"根因）。
      * 断点续传：
      *   1) 每次上传前先查已上传分片（s3_list_upload_parts 为权威来源），跳过已传分片；
      *   2) 若本次 upload_request 返回新 UploadId，但本地缓存有"同一文件+同一父目录"的旧会话，
@@ -2020,7 +2035,7 @@ public class MainActivity extends Activity {
      */
     private String runMultipartUpload(UpTask ut, File f, long size, String etag, String fname,
             long parentFileId, String bucket, String storageNode, String uploadKey, String uploadId,
-            long fileId, long sliceSize, StringBuilder log) throws Exception {
+            long fileId, long sliceSize, int uploadFileStatus, StringBuilder log) throws Exception {
         final String API = "https://api.123pan.cn";
         if (sliceSize <= 0) sliceSize = 5L * 1024 * 1024;
         if (uploadId == null || uploadId.isEmpty()) throw new MultipartFallback("UploadId 为空");
@@ -2224,28 +2239,22 @@ public class MainActivity extends Activity {
                .append("/").append(totalParts).append("\n");
         }
 
-        // ---------- 4) 完成分片合并 ----------
-        String compBody = "{\"bucket\":\"" + useBucket + "\",\"key\":\"" + useKey
-            + "\",\"uploadId\":\"" + useUploadId + "\",\"storageNode\":\"" + useNode + "\"}";
-        String compResp = httpRequest("POST",
-            API + "/b/api/file/s3_complete_multipart_upload", compBody, true);
-        log.append("[mp] complete: ").append(compResp).append("\n");
-        org.json.JSONObject compJson = new org.json.JSONObject(compResp);
-        if (compJson.optInt("code", -1) != 0) {
-            throw new IOException("完成分片合并失败: " + compJson.optString("message"));
+        // ---------- 4) 完成归档（官方现行协议：upload_complete/v2 + 必要时轮询 result） ----------
+        // 【2026-09-16 根因修复】官方 Web 已完全不再调用 s3_complete_multipart_upload 与
+        // upload_complete(v1)：分片 PUT 完成后直接 POST upload_complete/v2（isMultipart:true，7 字段），
+        // 响应无 file_info 时轮询 GET upload_complete/result 直到文件真正落盘。
+        // 旧的 v1 链路会返回 code:0 却不归档——"提示成功但文件不出现"的假成功根因。
+        org.json.JSONObject finJson = completeUploadAndWait(useBucket, useKey, useUploadId, useNode,
+            fileId, size, true, uploadFileStatus, ut, log, "mp");
+        org.json.JSONObject finData = finJson.optJSONObject("data");
+        org.json.JSONObject finInfo = finData == null ? null : finData.optJSONObject("file_info");
+        if (finInfo == null) {
+            throw new IOException("归档未确认（file_info 缺失），文件可能未落盘，请重试");
         }
-        if (size > 64L * 1024 * 1024) {
-            try { Thread.sleep(3000); } catch (InterruptedException ignore) {} // 大文件合并较慢，稍候再收尾
-        }
-
-        // ---------- 5) 结束上传会话（归档） ----------
-        String closeBody = "{\"fileId\":" + fileId + "}";
-        String closeResp = httpRequest("POST", API + "/b/api/file/upload_complete", closeBody, true);
-        log.append("[mp] upload_complete: ").append(closeResp).append("\n");
-        org.json.JSONObject closeJson = new org.json.JSONObject(closeResp);
-        if (closeJson.optInt("code", -1) != 0) {
-            throw new IOException("上传收尾失败: " + closeJson.optString("message"));
-        }
+        fileId = finInfo.optLong("FileId", fileId);
+        log.append("[mp] archived fileId=").append(fileId)
+           .append(" name=").append(finInfo.optString("FileName", fname))
+           .append(" parent=").append(finInfo.optLong("ParentFileId", parentFileId)).append("\n");
         // 成功后清除会话缓存
         try { prefs.edit().remove(sessKey).apply(); } catch (Exception ignore) {}
 
@@ -2265,6 +2274,141 @@ public class MainActivity extends Activity {
         try {
             return new org.json.JSONObject(resp);
         } catch (Exception e) {
+            return null;
+        }
+    }
+    /**
+     * 完成归档并等待落盘证明（官方现行协议，2026-09-16 对齐官方 Web module 38709 与 rclone-123pan）。
+     *   1) POST /b/api/file/upload_complete/v2，body：
+     *      {StorageNode, bucket, fileId, fileSize, isMultipart, key, uploadId}；
+     *   2) 响应 data.file_info 缺失（或 UploadFileStatus==255 时直接）进入轮询：
+     *      GET /b/api/file/upload_complete/result（参数为同名 query），
+     *      间隔取响应 data.duration 秒（默认 2s），直到 file_info 出现；
+     *   3) 上限 15 分钟（与官方一致），期间可取消。
+     * 返回带有效 file_info 的完整响应；任何超时/错误均抛异常——绝不"假成功"。
+     */
+    private org.json.JSONObject completeUploadAndWait(String bucket, String key, String uploadId,
+            String storageNode, long fileId, long fileSize, boolean isMultipart,
+            int uploadFileStatus, UpTask ut, StringBuilder log, String tag) throws Exception {
+        final String API = "https://api.123pan.cn";
+        org.json.JSONObject body = new org.json.JSONObject();
+        try {
+            body.put("StorageNode", storageNode);
+            body.put("bucket", bucket);
+            body.put("fileId", fileId);
+            body.put("fileSize", fileSize);
+            body.put("isMultipart", isMultipart);
+            body.put("key", key);
+            body.put("uploadId", uploadId);
+        } catch (Exception e) {
+            throw new IOException("构建归档请求失败: " + e.getMessage());
+        }
+        if (uploadFileStatus != 255) {
+            String req = body.toString();
+            Log.d("PAN", "[" + tag + "] upload_complete/v2 req=" + req);
+            String resp = httpRequest("POST", API + "/b/api/file/upload_complete/v2", req, true);
+            Log.d("PAN", "[" + tag + "] upload_complete/v2 resp=" + resp);
+            log.append("[").append(tag).append("] upload_complete/v2: ").append(resp).append("\n");
+            org.json.JSONObject rj = new org.json.JSONObject(resp);
+            if (rj.optInt("code", -1) != 0) {
+                throw new IOException("归档失败: " + rj.optString("message"));
+            }
+            if (hasFileInfo(rj)) return rj;
+        } else {
+            log.append("[").append(tag).append("] UploadFileStatus=255，跳过 complete 直接轮询\n");
+        }
+        // 轮询 upload_complete/result（GET；query 与 complete body 同参；duration 秒，默认 2s）
+        String query = "StorageNode=" + urlenc(storageNode)
+            + "&bucket=" + urlenc(bucket)
+            + "&fileId=" + fileId
+            + "&fileSize=" + fileSize
+            + "&isMultipart=" + isMultipart
+            + "&key=" + urlenc(key)
+            + "&uploadId=" + urlenc(uploadId);
+        long deadline = System.currentTimeMillis() + 900000L;
+        long waitMs = 2000L;
+        while (true) {
+            if (ut != null && ut.cancelled) throw new StopUpload("已取消上传");
+            if (System.currentTimeMillis() > deadline) {
+                throw new IOException("归档结果确认超时，文件可能未落盘，请重试");
+            }
+            String resp = httpRequest("GET", API + "/b/api/file/upload_complete/result?" + query, null, true);
+            log.append("[").append(tag).append("] result poll: ").append(resp).append("\n");
+            org.json.JSONObject rj = new org.json.JSONObject(resp);
+            if (rj.optInt("code", -1) != 0) {
+                throw new IOException("确认归档结果失败: " + rj.optString("message"));
+            }
+            if (hasFileInfo(rj)) return rj;
+            org.json.JSONObject rd = rj.optJSONObject("data");
+            double dur = rd == null ? 2.0 : rd.optDouble("duration", 2.0);
+            if (dur > 0 && dur <= 86400) waitMs = (long) (dur * 1000);
+            if (waitMs < 200) waitMs = 200;
+            long slept = 0;
+            while (slept < waitMs) { // 分段休眠：保证取消及时生效
+                if (ut != null && ut.cancelled) throw new StopUpload("已取消上传");
+                long st = Math.min(250L, waitMs - slept);
+                Thread.sleep(st);
+                slept += st;
+            }
+        }
+    }
+    /** 判断归档响应 data.file_info 是否有效（FileId>0）。 */
+    private static boolean hasFileInfo(org.json.JSONObject rj) {
+        org.json.JSONObject rd = rj.optJSONObject("data");
+        if (rd == null) return false;
+        org.json.JSONObject fi = rd.optJSONObject("file_info");
+        return fi != null && fi.optLong("FileId", 0) > 0;
+    }
+    /** query 参数 URL 编码（失败返回空串，避免抛异常打断流程）。 */
+    private static String urlenc(String s) {
+        try {
+            return java.net.URLEncoder.encode(s == null ? "" : s, "UTF-8");
+        } catch (Exception e) {
+            return "";
+        }
+    }
+    /**
+     * 核验上传对象是否已真实出现在父目录列表中（对齐 rclone inspectUpload 的落盘校验）。
+     *   - fileId>0：按 FileId 精确命中，命中且 Type/Size 一致才算通过，否则不放过；
+     *   - fileId==0：按名称扫描，要求唯一候选且 Size 匹配（Etag 可用时也须匹配），多个候选视为歧义。
+     * 返回命中项，或 null（查不到/有歧义/请求失败）——调用方凭此决定是否降级真实上传。
+     */
+    private org.json.JSONObject findVisibleUploadedFile(long parentFileId, String fname,
+            long size, String md5, long fileId) {
+        try {
+            String params = "driveId=0&limit=200&next=0&orderBy=file_id&orderDirection=desc"
+                + "&parentFileId=" + parentFileId + "&trashed=false&Page=1&OnlyLookAbnormalFile=0";
+            String resp = httpRequest("GET",
+                "https://api.123pan.cn/b/api/file/list/new?" + params, null, true);
+            org.json.JSONObject rj = new org.json.JSONObject(resp);
+            if (rj.optInt("code", -1) != 0) return null;
+            org.json.JSONObject rd = rj.optJSONObject("data");
+            if (rd == null) return null;
+            org.json.JSONArray arr = rd.optJSONArray("InfoList");
+            if (arr == null) return null;
+            org.json.JSONObject candidate = null;
+            for (int i = 0; i < arr.length(); i++) {
+                org.json.JSONObject it = arr.optJSONObject(i);
+                if (it == null) continue;
+                long id = it.optLong("FileId", 0);
+                if (fileId > 0) {
+                    if (id != fileId) continue;
+                    long isz = it.optLong("Size", size);
+                    if (it.optInt("Type", 0) == 0 && isz == size) return it;
+                    return null; // FileId 命中但字段矛盾：不放过
+                }
+                if (!fname.equals(it.optString("FileName", ""))) continue;
+                if (it.optInt("Type", 0) != 0) continue;
+                if (it.optLong("Size", -1) != size) continue;
+                String ietag = it.optString("Etag", it.optString("etag", ""));
+                if (ietag != null && !ietag.isEmpty() && md5 != null && !md5.isEmpty()
+                    && !ietag.equalsIgnoreCase(md5)) continue;
+                if (candidate != null) return null; // 多个候选：歧义，放弃
+                candidate = it;
+            }
+            return candidate;
+        } catch (Exception e) {
+            Log.d("PAN", "findVisibleUploadedFile fail: " + e);
             return null;
         }
     }
