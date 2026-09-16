@@ -20,8 +20,13 @@ jobs:
           distribution: temurin
           java-version: '17'
 
+      # 覆盖 setup-android 默认 packages "tools platform-tools"：legacy "tools" 包已被
+      # Google 从 SDK 仓库移除，继续安装会报 "Failed to find package 'tools'" 导致步骤失败
+      # （2026-09 runner 镜像 / sdkmanager 16.0 漂移；显式只装 platform-tools）。
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools'
 
       - name: Install Android SDK packages
         run: |
