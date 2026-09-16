@@ -2579,11 +2579,15 @@
     state.updateInfo = null;
     if (!info.url) { toast('未找到安装包下载地址，可前往 Releases 页手动下载'); return; }
     var fname = '123pan-mobile-' + (info.version || 'new') + '.apk';
+    // 更新包下载改用自研下载器（原生侧自动做「直连→镜像回退→自动重试→字节校验」），
+    // 不再走系统 DownloadManager 单一直连（CN 网络下易失败且失败后无恢复手段）。
+    var useStream = !!(bridge && bridge.downloadStream);
     try {
-      var id = bridge && bridge.download ? bridge.download(info.url, fname) : 0;
+      var id = useStream ? Number(bridge.downloadStream(info.url, fname, Number(info.size) || 0))
+        : (bridge && bridge.download ? bridge.download(info.url, fname) : 0);
       if (Number(id) > 0) {
-        //注册到传输列表（系统下载任务）：轮询同步进度与完成状态，完成后点「打开」直接安装
-        addTransfer({ id: Number(id), name: fname, size: Number(info.size) || 0, total: Number(info.size) || 0, status: 'downloading', stream: false, link: info.url });
+        //注册到传输列表：轮询同步进度与完成状态，完成后点「打开」直接安装
+        addTransfer({ id: Number(id), name: fname, size: Number(info.size) || 0, total: Number(info.size) || 0, status: 'downloading', stream: useStream, link: info.url });
         startProgressPolling();
         if (state.view === 'transfers') renderTransfers();
         toast('已加入下载任务，完成后可在传输页打开安装');

@@ -633,6 +633,14 @@ public class MainActivity extends Activity {
         if (t.cancelled) { t.running = false; return; }
         t.status = 1;
         logDl("task#" + t.id + " download begin fname=" + t.filename + " from=" + t.done + " expected=" + t.expected);
+        // GitHub 更新包（自动更新下载）：走专用路径 —— 直连 + 镜像回退 + 自动重试 + 严格字节校验。
+        // 背景：系统 DownloadManager 单一直连 GitHub 在 CN 网络抖动 / 资产域名
+        // （release-assets.githubusercontent.com）受限时失败后无任何恢复手段，改为自研多候选下载。
+        if (isGithubUpdateUrl(t.url)) {
+            logDl("task#" + t.id + " route to github update downloader");
+            runGithubUpdateDownload(t);
+            return;
+        }
         java.io.OutputStream out = null;
         HttpURLConnection conn = null;
         final MainActivity act = this;
@@ -762,6 +770,173 @@ public class MainActivity extends Activity {
             t.running = false;
         }
     }
+    // ===== GitHub 更新包下载（自动更新专用）：直连 + 镜像回退 + 自动重试 + 严格字节校验 =====
+    /** GitHub 更新包下载的镜像前缀（直连失败后按顺序回退） */
+    private static final String[] GITHUB_MIRROR_PREFIXES = new String[] {
+        "https://ghfast.top/",
+        "https://gh-proxy.com/",
+        "https://ghproxy.net/",
+        "https://gh.llkk.cc/"
+    };
+
+    /** 判断是否为 GitHub 更新包下载（自动更新场景：github.com / 镜像地址） */
+    private boolean isGithubUpdateUrl(String url) {
+        if (url == null) return false;
+        String u = url.toLowerCase();
+        return u.contains("github.com/") || u.contains("githubusercontent.com/")
+            || u.contains("ghfast.top/") || u.contains("gh-proxy.com/")
+            || u.contains("ghproxy.net/") || u.contains("gh.llkk.cc/");
+    }
+
+    /** 构建 GitHub 下载候选链：官方直连优先，随后逐个镜像前缀 */
+    private java.util.List<String> buildGithubCandidates(String url) {
+        java.util.List<String> list = new java.util.ArrayList<String>();
+        if (url == null) return list;
+        String u = url.trim();
+        boolean isMirror = u.contains("ghfast.top/") || u.contains("gh-proxy.com/")
+            || u.contains("ghproxy.net/") || u.contains("gh.llkk.cc/");
+        if (isMirror) { list.add(u); return list; } // 已是镜像形态：只试自身，避免套娃
+        list.add(u);
+        for (String m : GITHUB_MIRROR_PREFIXES) list.add(m + u);
+        return list;
+    }
+
+    /**
+     * GitHub 更新包下载主流程：多候选（直连+镜像）× 多轮重试；任一候选成功即完成。
+     * 调用前 t.running 已置 true；本方法负责在所有出口复位 t.running。
+     */
+    private void runGithubUpdateDownload(final DlTask t) {
+        try {
+            logDl("task#" + t.id + " github dl: fname=" + t.filename + " expected=" + t.expected + " url=" + t.url);
+            java.util.List<String> candidates = buildGithubCandidates(t.url);
+            if (candidates.isEmpty()) { t.status = 16; return; }
+            final int rounds = 2; // 全候选失败后整体再来一轮
+            for (int round = 0; round < rounds; round++) {
+                if (t.cancelled) return;
+                for (int ci = 0; ci < candidates.size(); ci++) {
+                    if (t.cancelled) return;
+                    if (t.status == 2) { logDl("task#" + t.id + " paused before try"); return; }
+                    String cand = candidates.get(ci);
+                    logDl("task#" + t.id + " try[" + round + "." + ci + "] " + cand);
+                    boolean ok = attemptGithubDownload(t, cand);
+                    if (ok) {
+                        t.status = 8;
+                        logDl("task#" + t.id + " SUCCESS via try[" + round + "." + ci + "]");
+                        return;
+                    }
+                    if (t.cancelled) return;
+                    if (t.status == 2) { logDl("task#" + t.id + " paused after try"); return; }
+                    try { Thread.sleep(900); } catch (InterruptedException ignore) {}
+                }
+                if (round < rounds - 1) {
+                    logDl("task#" + t.id + " all candidates failed, retry round " + (round + 1));
+                    try { Thread.sleep(2500); } catch (InterruptedException ignore) {}
+                }
+            }
+            t.status = 16;
+            t.done = 0;
+            logDl("task#" + t.id + " FAILED after all candidates/rounds");
+        } catch (Exception e) {
+            t.status = 16;
+            t.done = 0;
+            logDl("task#" + t.id + " github dl EXCEPTION " + e);
+        } finally {
+            t.running = false;
+        }
+    }
+
+    /**
+     * 单次尝试：从指定 URL 完整下载到 MediaStore，并做严格字节校验。
+     * 成功返回 true；失败/取消/暂停返回 false（失败时清理半成品，避免残留）。
+     * 注意：GitHub 场景不带任何 123pan 认证头，避免污染官方/镜像请求。
+     */
+    private boolean attemptGithubDownload(final DlTask t, String url) {
+        final MainActivity act = this;
+        HttpURLConnection conn = null;
+        java.io.OutputStream out = null;
+        android.net.Uri itemUri = null;
+        long written = 0;
+        try {
+            conn = (HttpURLConnection) new java.net.URL(url).openConnection();
+            conn.setConnectTimeout(8000);
+            conn.setReadTimeout(30000);
+            conn.setRequestMethod("GET");
+            conn.setInstanceFollowRedirects(true);
+            conn.setRequestProperty("User-Agent",
+                "Mozilla/5.0 (Linux; Android14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36");
+            conn.setRequestProperty("Accept", "application/octet-stream,*/*");
+            int code = conn.getResponseCode();
+            if (code < 200 || code >= 300) {
+                logDl("task#" + t.id + " github http " + code + " for " + url);
+                return false;
+            }
+            long len = conn.getContentLengthLong();
+            long want = t.expected > 0 ? t.expected : (len > 0 ? len : 0);
+            android.content.ContentValues cv = new android.content.ContentValues();
+            cv.put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, t.filename);
+            String mime = t.filename != null && t.filename.toLowerCase().endsWith(".apk")
+                ? "application/vnd.android.package-archive" : "application/octet-stream";
+            cv.put(android.provider.MediaStore.MediaColumns.MIME_TYPE, mime);
+            cv.put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS);
+            cv.put(android.provider.MediaStore.MediaColumns.IS_PENDING, 1);
+            itemUri = act.getContentResolver().insert(
+                android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, cv);
+            if (itemUri == null) { logDl("task#" + t.id + " mediastore insert null"); return false; }
+            java.io.InputStream in = conn.getInputStream();
+            out = act.getContentResolver().openOutputStream(itemUri, "w");
+            if (out == null) { logDl("task#" + t.id + " openOutputStream null"); cleanupMediaUri(itemUri); return false; }
+            byte[] buf = new byte[65536];
+            int n;
+            while ((n = in.read(buf)) > 0) {
+                if (t.cancelled || t.status == 2) break; // 取消/暂停：退出写流
+                out.write(buf, 0, n);
+                written += n;
+                t.done = written;
+                if (t.total <= 0 && len > 0) t.total = len;
+            }
+            out.flush(); out.close(); out = null;
+            if (t.cancelled || t.status == 2) { // 取消/暂停：删除半成品，重试从头
+                cleanupMediaUri(itemUri);
+                t.done = 0;
+                logDl("task#" + t.id + " aborted(cancelled/paused) at " + written);
+                return false;
+            }
+            if (want > 0 && written < want) { // 严格字节校验：绝不让不完整内容留存
+                logDl("task#" + t.id + " incomplete got=" + written + " want=" + want + " url=" + url);
+                cleanupMediaUri(itemUri);
+                t.done = 0;
+                return false;
+            }
+            // 校验通过：清除 pending 标记，立即可见
+            android.content.ContentValues pend = new android.content.ContentValues();
+            pend.put(android.provider.MediaStore.MediaColumns.IS_PENDING, 0);
+            act.getContentResolver().update(itemUri, pend, null, null);
+            String realPath = queryMediaDataPath(act, itemUri);
+            t.uri = itemUri;
+            t.realPath = realPath != null ? realPath : itemUri.toString();
+            t.done = written;
+            t.total = written;
+            streamTaskFiles.put(t.id, t.realPath);
+            streamTaskUris.put(t.id, itemUri.toString());
+            logDl("task#" + t.id + " github ok bytes=" + written + " via " + url);
+            return true;
+        } catch (Exception e) {
+            if (!t.cancelled && t.status != 2) logDl("task#" + t.id + " github attempt fail: " + e);
+            if (itemUri != null) cleanupMediaUri(itemUri);
+            t.done = 0;
+            return false;
+        } finally {
+            try { if (out != null) out.close(); } catch (Exception ignore) {}
+            try { if (conn != null) conn.disconnect(); } catch (Exception ignore) {}
+        }
+    }
+
+    /** 清理 MediaStore 半成品条目 */
+    private void cleanupMediaUri(android.net.Uri u) {
+        if (u == null) return;
+        try { getContentResolver().delete(u, null, null); } catch (Exception ignore) {}
+    }
+
     /** 暂停下载任务（下载线程在下一数据块边界退出并保留断点） */
     public void pauseDownload(final long taskId) {
         DlTask t = dlTasks.get(taskId);
@@ -2720,8 +2895,15 @@ public class MainActivity extends Activity {
                 long apkSize = 0;
                 org.json.JSONArray assets = rel.optJSONArray("assets");
                 if (assets != null && assets.length() > 0) {
-                  url = assets.getJSONObject(0).optString("browser_download_url", "");
-                  apkSize = assets.getJSONObject(0).optLong("size", 0);
+                  // 优先取第一个 .apk 资产（不盲目取 [0]，防资产顺序变化导致取错文件）
+                  org.json.JSONObject pick = assets.getJSONObject(0);
+                  for (int ai = 0; ai < assets.length(); ai++) {
+                    org.json.JSONObject aobj = assets.getJSONObject(ai);
+                    String an = aobj.optString("name", "");
+                    if (an.toLowerCase().endsWith(".apk")) { pick = aobj; break; }
+                  }
+                  url = pick.optString("browser_download_url", "");
+                  apkSize = pick.optLong("size", 0);
                 }
                 out.put("url", url);
                 out.put("size", apkSize);
