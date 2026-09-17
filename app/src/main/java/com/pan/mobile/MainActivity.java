@@ -1472,6 +1472,30 @@ public class MainActivity extends Activity {
         conn.disconnect();
         return sb.toString();
     }
+    /**
+     * 带自动重试的 API 请求：上传/下载长任务链路专用（网络瞬时抖动时自动恢复）。
+     * 首次失败后按 800ms、1600ms…指数退避重试，最多 maxRetries 次；全部失败抛最后异常。
+     * 仅用于 body 较小且幂等的 API 调用（如 upload_request / s3_repare / s3_list / upload_complete）。
+     */
+    private String httpRequestWithRetry(String method, String url, String body, boolean withAuth,
+            int maxRetries) throws IOException {
+        IOException last = null;
+        for (int i = 0; i <= maxRetries; i++) {
+            try {
+                if (i > 0) {
+                    long backoff = 800L * i;
+                    try { Thread.sleep(backoff); } catch (InterruptedException ie) { break; }
+                    Log.d("PAN", "httpRequest retry #" + i + " " + method + " " + url);
+                }
+                return httpRequest(method, url, body, withAuth);
+            } catch (IOException e) {
+                last = e;
+                Log.w("PAN", "httpRequest fail (attempt " + (i + 1) + "/" + (maxRetries + 1)
+                    + "): " + e + " url=" + url);
+            }
+        }
+        throw last != null ? last : new IOException("请求失败: timeout");
+    }
 
     // ============ 本地预览代理 ============
     // 背景：WebView 的 <img>/<audio>/<video>/pdf.js 无法携带认证头直连 123pan CDN 直链，
@@ -1916,7 +1940,7 @@ public class MainActivity extends Activity {
                             + ",\"duplicate\":0}";
                         Log.d("PAN", "[1]upload_request req body=" + upBody);
                         Log.d("PAN", "[1]DEBUG token=" + token);
-                        String upResp = httpRequest("POST", API + "/b/api/file/upload_request", upBody, true);
+                        String upResp = httpRequestWithRetry("POST", API + "/b/api/file/upload_request", upBody, true, 2);
                         Log.d("PAN", "[1]upload_request resp=" + upResp);
                         log.append("[1]upload_request: ").append(upResp).append("\n");
                         org.json.JSONObject upJson = new org.json.JSONObject(upResp);
@@ -2024,8 +2048,8 @@ public class MainActivity extends Activity {
                             + ",\"uploadId\":\"" + uploadId
                             + "\",\"StorageNode\":\"" + storageNode + "\"}";
                         Log.d("PAN", "[2]s3_upload_object/auth req body=" + authBody);
-                        String authResp = httpRequest("POST",
-                            API + "/b/api/file/s3_upload_object/auth", authBody, true);
+                        String authResp = httpRequestWithRetry("POST",
+                            API + "/b/api/file/s3_upload_object/auth", authBody, true, 2);
                         Log.d("PAN", "[2]s3_upload_object/auth resp=" + authResp);
                         log.append("[2]s3_upload_object/auth: ").append(authResp).append("\n");
                         org.json.JSONObject authJson = new org.json.JSONObject(authResp);
@@ -2335,8 +2359,8 @@ public class MainActivity extends Activity {
                     + ",\"uploadId\":\"" + useUploadId + "\",\"StorageNode\":\"" + useNode + "\"}";
                 String prepResp;
                 try {
-                    prepResp = httpRequest("POST",
-                        API + "/b/api/file/s3_repare_upload_parts_batch", prepBody, true);
+                    prepResp = httpRequestWithRetry("POST",
+                        API + "/b/api/file/s3_repare_upload_parts_batch", prepBody, true, 2);
                 } catch (IOException e) {
                     if (!payloadStarted && uploaded.isEmpty()) {
                         throw new MultipartFallback("获取分片地址失败: " + e.getMessage());
@@ -2356,35 +2380,56 @@ public class MainActivity extends Activity {
                 if (putUrl.isEmpty()) {
                     throw new IOException("分片 " + pi + " 预签名地址为空");
                 }
-                // 2b) PUT 分片（流式读取本地文件对应区间，256KB 分块检查取消并上报进度）
-                raf.seek(start);
-                HttpURLConnection put = (HttpURLConnection) new URL(putUrl).openConnection();
-                put.setConnectTimeout(30000);
-                put.setReadTimeout(180000);
-                put.setRequestMethod("PUT");
-                put.setDoOutput(true);
-                put.setFixedLengthStreamingMode((int) partLen);
-                payloadStarted = true;
-                java.io.OutputStream pos = put.getOutputStream();
-                long sent = 0;
-                while (sent < partLen) {
-                    if (ut.cancelled) {
-                        try { pos.close(); } catch (Exception ignore) {}
-                        throw new StopUpload("已取消上传");
+                // 2b) PUT 分片（流式读取本地文件对应区间，256KB 分块检查取消并上报进度）；
+                // 网络抖动导致 timeout/失败时自动重试（最多3次，退避1s/2s），全部失败才中断任务。
+                boolean putOk = false;
+                IOException putLastErr = null;
+                for (int ptry = 0; ptry < 3 && !putOk; ptry++) {
+                    if (ptry > 0) {
+                        try { Thread.sleep(1000L * ptry); } catch (InterruptedException ie) {}
+                        log.append("[mp.").append(pi).append("] PUT retry #").append(ptry).append("\n");
                     }
-                    int len = (int) Math.min((long) buf.length, partLen - sent);
-                    int rn = raf.read(buf, 0, len);
-                    if (rn <= 0) throw new IOException("读取本地文件失败");
-                    pos.write(buf, 0, rn);
-                    sent += rn;
-                    fireUploadProgress(ut, uploadedBytes + sent, size);
+                    try {
+                        raf.seek(start);
+                        HttpURLConnection put = (HttpURLConnection) new URL(putUrl).openConnection();
+                        put.setConnectTimeout(30000);
+                        put.setReadTimeout(180000);
+                        put.setRequestMethod("PUT");
+                        put.setDoOutput(true);
+                        put.setFixedLengthStreamingMode((int) partLen);
+                        payloadStarted = true;
+                        java.io.OutputStream pos = put.getOutputStream();
+                        long sent = 0;
+                        while (sent < partLen) {
+                            if (ut.cancelled) {
+                                try { pos.close(); } catch (Exception ignore) {}
+                                throw new StopUpload("已取消上传");
+                            }
+                            int len = (int) Math.min((long) buf.length, partLen - sent);
+                            int rn = raf.read(buf, 0, len);
+                            if (rn <= 0) throw new IOException("读取本地文件失败");
+                            pos.write(buf, 0, rn);
+                            sent += rn;
+                            fireUploadProgress(ut, uploadedBytes + sent, size);
+                        }
+                        pos.flush();
+                        pos.close();
+                        int putCode = put.getResponseCode();
+                        log.append("[mp.").append(pi).append("] PUT status=").append(putCode).append("\n");
+                        if (putCode < 200 || putCode >= 300) {
+                            putLastErr = new IOException("HTTP " + putCode);
+                            try { put.disconnect(); } catch (Exception ignore) {}
+                            continue;
+                        }
+                        put.disconnect();
+                        putOk = true;
+                    } catch (IOException e) {
+                        putLastErr = e;
+                    }
                 }
-                pos.flush();
-                pos.close();
-                int putCode = put.getResponseCode();
-                log.append("[mp.").append(pi).append("] PUT status=").append(putCode).append("\n");
-                if (putCode < 200 || putCode >= 300) {
-                    throw new IOException("分片 " + pi + " 上传失败 HTTP " + putCode);
+                if (!putOk) {
+                    throw new IOException("分片 " + pi + " 上传失败（已重试3次）: "
+                        + (putLastErr != null ? putLastErr.getMessage() : "未知"));
                 }
                 uploadedBytes += partLen;
                 uploaded.add(pi);
@@ -2445,7 +2490,7 @@ public class MainActivity extends Activity {
             String storageNode) throws IOException {
         String body = "{\"bucket\":\"" + bucket + "\",\"key\":\"" + key
             + "\",\"uploadId\":\"" + uploadId + "\",\"storageNode\":\"" + storageNode + "\"}";
-        String resp = httpRequest("POST", "https://api.123pan.cn/b/api/file/s3_list_upload_parts", body, true);
+        String resp = httpRequestWithRetry("POST", "https://api.123pan.cn/b/api/file/s3_list_upload_parts", body, true, 2);
         try {
             return new org.json.JSONObject(resp);
         } catch (Exception e) {
@@ -2481,7 +2526,7 @@ public class MainActivity extends Activity {
         if (uploadFileStatus != 255) {
             String req = body.toString();
             Log.d("PAN", "[" + tag + "] upload_complete/v2 req=" + req);
-            String resp = httpRequest("POST", API + "/b/api/file/upload_complete/v2", req, true);
+            String resp = httpRequestWithRetry("POST", API + "/b/api/file/upload_complete/v2", req, true, 2);
             Log.d("PAN", "[" + tag + "] upload_complete/v2 resp=" + resp);
             log.append("[").append(tag).append("] upload_complete/v2: ").append(resp).append("\n");
             org.json.JSONObject rj = new org.json.JSONObject(resp);
@@ -2507,7 +2552,19 @@ public class MainActivity extends Activity {
             if (System.currentTimeMillis() > deadline) {
                 throw new IOException("归档结果确认超时，文件可能未落盘，请重试");
             }
-            String resp = httpRequest("GET", API + "/b/api/file/upload_complete/result?" + query, null, true);
+            String resp;
+            try {
+                resp = httpRequest("GET", API + "/b/api/file/upload_complete/result?" + query, null, true);
+            } catch (IOException e) {
+                // 单次轮询失败（网络抖动）不中断任务：未到总时限则退避后继续轮询
+                log.append("[").append(tag).append("] result poll transient fail: ")
+                   .append(e.getMessage()).append("\n");
+                if (System.currentTimeMillis() > deadline) {
+                    throw new IOException("归档结果确认超时，文件可能未落盘，请重试");
+                }
+                Thread.sleep(1000);
+                continue;
+            }
             log.append("[").append(tag).append("] result poll: ").append(resp).append("\n");
             org.json.JSONObject rj = new org.json.JSONObject(resp);
             if (rj.optInt("code", -1) != 0) {
