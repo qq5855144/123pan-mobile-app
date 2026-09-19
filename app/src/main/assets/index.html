@@ -21,6 +21,7 @@
   <div id="page-main" class="hidden">
     <header id="topbar">
       <span id="top-title">123云盘</span>
+      <span id="top-dup" data-icon="find-dup" title="一键查重"></span>
       <span id="top-sort" data-icon="sort" title="排序"></span>
     </header>
 
@@ -274,6 +275,22 @@
   <div class="pc-body" id="pv-body"></div>
 </div>
 
+<!-- 一键查重结果面板 -->
+<div id="dup-page" class="page-cover hidden">
+  <div class="pc-head">
+    <span class="pc-back" id="dup-back">‹</span>
+    <span class="pc-title">重复文件</span>
+    <button class="pc-btn" id="dup-rescan">重新扫描</button>
+  </div>
+  <div class="dup-summary" id="dup-summary"></div>
+  <div class="dup-body" id="dup-body"></div>
+  <div class="dup-bar hidden" id="dup-bar">
+    <span id="dup-selinfo">已选 0 项</span>
+    <button id="dup-organize" class="dup-btn">整理</button>
+    <button id="dup-delete" class="dup-btn danger">删除重复项</button>
+  </div>
+</div>
+
 <!-- 排序面板 -->
 <div id="sort-sheet" class="sheet hidden">
   <div class="sheet-mask" data-close></div>
@@ -403,6 +420,7 @@
   <symbol id="i-apk" viewBox="0 0 24 24"><path d="M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z" fill="none" stroke="currentColor" stroke-width="2"/><path d="M9 8h.01M15 8h.01M9 14h6a3 3 0 0 1-6 0z" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/></symbol>
   <symbol id="i-user-plus" viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM19 8v6M22 11h-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
   <symbol id="i-broom" viewBox="0 0 24 24"><path d="M19 3l-7 7M8 12l-5 9 9-5M13 8l3 3M14 7l3 3M15 6l3 3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  <symbol id="i-find-dup" viewBox="0 0 24 24"><rect x="3" y="3" width="12" height="12" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><rect x="9" y="9" width="12" height="12" rx="2" fill="none" stroke="currentColor" stroke-width="2"/></symbol>
   <symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
 </svg>
 
