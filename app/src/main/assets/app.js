@@ -1092,16 +1092,41 @@
   }
 
   // ==================== 一键查重（全盘重复文件） ====================
-  // 名称归一化：去扩展名 + 去副本后缀(1)/(2)/[1]/【1】 + 去副本/copy/备份等尾缀 + 去空白标点 + 小写
+  // 去扩展名：只有「以字母开头」的后缀才算扩展名。
+  // 绝不能把数字段当扩展名删掉，否则 “10.0.1” 会被剪成 “10.0”，版本号就丢了。
+  function dupStripExt(name) {
+    return String(name || '').replace(/\.[A-Za-z][A-Za-z0-9]{0,7}$/, '');
+  }
+  // 版本/序号指纹：两个文件若指纹不同，就不可能是同一个文件的副本。
+  //   'androidfs 10.0.0'         -> '10.0.0'
+  //   'AIDE(模块专用) 3.2.1910'   -> '3.2.1910'
+  //   'DSMCP_2.1.0.apk'          -> '2.1.0'
+  //   '小AdGuard4.7.30(10214591)'-> '4.7.30|10214591'
+  //   'report_2023'              -> '2023'
+  //   'photo'                    -> ''
+  function dupVersionKey(name) {
+    var s = dupStripExt(name);
+    var parts = [];
+    var m = s.match(/\d+(?:[._]\d+){1,}/);   // 形如 10.0.0 / 3.2.1910 的点分版本号
+    var rest = s;
+    if (m) {
+      parts.push(m[0].replace(/_/g, '.'));
+      rest = s.slice(0, m.index) + ' ' + s.slice(m.index + m[0].length);
+    }
+    var nums = rest.match(/\d+/g) || [];     // 其余长度 >= 2 的数字（构建号/日期/序号）
+    for (var i = 0; i < nums.length; i++) {
+      if (nums[i].length >= 2) parts.push(nums[i]);
+    }
+    return parts.join('|');
+  }
+  // 名称归一化：只清除「副本」类噪声，保留数字（版本号必须参与比较）
   function dupNormalize(name) {
-    var s = String(name || '');
-    s = s.replace(/\.[A-Za-z0-9]{1,8}$/, '');                       // 去扩展名
+    var s = dupStripExt(name);
     s = s.replace(/[\s\.\-_]*[\(\[【（]\s*(?:副本|copy|拷贝|c)?\s*\d+\s*[\)\]】）]\s*$/gi, ''); // 去 (1)/（2）/[1]/【1】
-    s = s.replace(/[\s\-_\.]*(?:副本|拷贝|复制|copy|备份|backup|new|新建|最终版|最终|final|修改版|最新)\s*$/gi, ''); // 去常见尾缀
+    s = s.replace(/[\s\-_\.]*(?:副本|拷贝|复制|copy|备份|backup|新建|最终版|final|修改版)\s*$/gi, ''); // 去常见尾缀
     s = s.replace(/[\s\u3000]+/g, '')                                // 去空白
          .replace(/[\.\-_·]+/g, '');                                 // 去分隔符
-    s = s.toLowerCase();
-    return s;
+    return s.toLowerCase();
   }
   // 编辑距离相似度（0~1），用于“名称大致匹配”的兜底判定
   function dupSimilarity(a, b) {
@@ -1123,14 +1148,39 @@
     var dist = prev[lb];
     return 1 - dist / Math.max(la, lb);
   }
-  // 判断两个文件名是否“大致相同”（归一化后相等或相似度达标）
+  // 判断两个文件名是否为“同一文件的重复副本”。
+  // 关键修正：先比版本指纹，再做分级严格度判定，避免“名称毫无共同点也判重”。
   function dupIsSimilar(a, b) {
     var na = dupNormalize(a), nb = dupNormalize(b);
     if (!na || !nb) return false;
+
+    // ── 规则1：版本号/序号必须完全一致（10.0.0 与 10.0.1 是不同版本，不是重复）
+    if (dupVersionKey(a) !== dupVersionKey(b)) return false;
+
     if (na === nb) return true;
-    // 归一化后有包含关系（如 “报告” 与 “报告终稿”）也算匹配
-    if (na.length >= 2 && nb.length >= 2 && (na.indexOf(nb) >= 0 || nb.indexOf(na) >= 0)) return true;
-    return dupSimilarity(na, nb) >= 0.82;
+
+    // ── 规则2：包含关系必须有严格约束（原来无条件 return true 是误报主因）
+    //     仅当多出来的尾巴很短、且不含数字时才算重复：
+    //     '报告' ⊂ '报告copy' → 是；'报告' ⊂ '报告终稿' → 否
+    var shorter = na.length <= nb.length ? na : nb;
+    var longer = na.length <= nb.length ? nb : na;
+    if (shorter.length >= 4 && longer.indexOf(shorter) >= 0) {
+      var tail = longer.replace(shorter, '');
+      if (tail.length <= Math.max(2, Math.floor(longer.length * 0.25)) && !/\d/.test(tail)) {
+        return true;
+      }
+      return false;
+    }
+
+    // ── 规则3：相似度阈值随名称长度收紧（短名必须几乎完全一样）
+    var sim = dupSimilarity(na, nb);
+    var m = Math.min(na.length, nb.length);
+    var thr;
+    if (m < 6) thr = 1.0;          // 极短名：必须完全一致
+    else if (m < 12) thr = 0.95;   // 短名：最多差 1 个字符
+    else if (m < 24) thr = 0.90;
+    else thr = 0.85;
+    return sim >= thr;
   }
   // 更新扫描进度文案
   function dupUpdateProgress() {
