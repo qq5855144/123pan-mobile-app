@@ -642,3 +642,68 @@ svg { display: block; }
 .pv-btn { height: 36px; padding: 0 22px; border-radius: 999px; background: #fff; border: 1px solid #e6e8ee; color: #4b5563; font-size: 14px; }
 .pv-btn:active { opacity: .85; }
 .pv-btn.primary { background: #2B6DE8; border-color: #2B6DE8; color: #fff; }
+
+
+/* ---------- 一键查重 ---------- */
+#top-dup {
+  margin-left: auto; width: 34px; height: 34px; display: flex; align-items: center; justify-content: center;
+  color: #4b5563; border-radius: 8px;
+}
+#top-dup svg { width: 20px; height: 20px; }
+#top-dup:active { background: #f2f3f5; }
+#top-sort { margin-left: 4px; }
+.dup-summary {
+  padding: 10px 16px; font-size: 13px; color: #6b7280; background: #fff;
+  border-bottom: 1px solid #eef0f5; flex: 0 0 auto;
+}
+.dup-summary b { color: #2B6DE8; }
+.dup-body { flex: 1; overflow-y: auto; padding: 10px 12px 90px; }
+.dup-loading { text-align: center; padding: 48px 0; color: #8a93a6; }
+.dup-loading p { margin-top: 10px; font-size: 13px; }
+.dup-group {
+  background: #fff; border-radius: 12px; margin-bottom: 12px; overflow: hidden;
+  box-shadow: 0 1px 4px rgba(20, 40, 90, .05);
+}
+.dup-group-head {
+  padding: 10px 14px; font-size: 13px; font-weight: 600; color: #2B6DE8;
+  background: #f3f7ff; border-bottom: 1px solid #e6eefc;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.dup-row {
+  display: flex; align-items: center; gap: 10px; padding: 10px 14px;
+  border-bottom: 1px solid #f4f5f8; cursor: pointer;
+}
+.dup-row:last-child { border-bottom: none; }
+.dup-row.sel { background: #f5f9ff; }
+.dup-check {
+  flex: 0 0 auto; width: 20px; height: 20px; border-radius: 50%;
+  border: 1.5px solid #c9cfda; display: flex; align-items: center; justify-content: center;
+  font-size: 13px; color: #fff; box-sizing: border-box;
+}
+.dup-check.on { background: #2B6DE8; border-color: #2B6DE8; }
+.dup-icon { flex: 0 0 auto; width: 34px; height: 34px; display: flex; align-items: center; justify-content: center; }
+.dup-icon svg { width: 26px; height: 26px; }
+.dup-info { flex: 1; min-width: 0; }
+.dup-name { font-size: 14px; color: #1f2430; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dup-meta { font-size: 12px; color: #98a1b3; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dup-keep-badge {
+  flex: 0 0 auto; font-size: 11px; color: #16a34a; background: #e9f9ef;
+  border-radius: 999px; padding: 3px 10px;
+}
+.dup-sel-badge {
+  flex: 0 0 auto; font-size: 11px; color: #d97706; background: #fef3e2;
+  border-radius: 999px; padding: 3px 10px;
+}
+.dup-bar {
+  position: absolute; left: 0; right: 0; bottom: 0; height: 58px;
+  display: flex; align-items: center; gap: 10px; padding: 0 14px;
+  background: #fff; border-top: 1px solid #eef0f5;
+}
+.dup-bar.hidden { display: none; }
+#dup-selinfo { flex: 1; font-size: 13px; color: #6b7280; }
+.dup-btn {
+  height: 38px; padding: 0 18px; border: none; border-radius: 999px;
+  background: #eaf1ff; color: #2B6DE8; font-size: 14px; font-weight: 600;
+}
+.dup-btn:active { opacity: .85; }
+.dup-btn.danger { background: #fdecec; color: #e5484d; }
