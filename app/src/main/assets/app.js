@@ -1192,22 +1192,39 @@
     }
   }
   // 递归拉取全盘文件（从根目录 parentFileId=0 开始）
+  // 关键：只有当所有在途请求都返回（pending===0）后才结束；
+  //       空闲超时 idleTimer 在每次收到响应时重置，防止个别请求丢失导致永久卡死。
   function dupFetchAll(cb) {
     var files = [];
     var visited = {};
     var pending = 0;
     var finished = false;
-    var fallback = null;
+    var started = false;
+    var idleTimer = null;
+    var IDLE_MS = 8000;      // 连续 8s 无任何响应才认为结束（防个别回调丢失卡死）
+    var SHORT_MS = 400;      // 已无在途请求时的快速收尾静默窗口
+    var MAX_MS = 180000;     // 全局硬超时 3 分钟
+    var hardTimer = null;
     function done() {
       if (finished) return;
       finished = true;
-      if (fallback) { clearTimeout(fallback); fallback = null; }
+      if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
+      if (hardTimer) { clearTimeout(hardTimer); hardTimer = null; }
       cb(files);
+    }
+    function armIdle(ms) {
+      if (idleTimer) clearTimeout(idleTimer);
+      idleTimer = setTimeout(function () {
+        // 只有确实没有任何在途请求时才收尾
+        if (pending <= 0) done();
+        else armIdle();
+      }, ms || IDLE_MS);
     }
     function fetchDir(pid) {
       var key = String(pid);
       if (visited[key]) return;
       visited[key] = 1;
+      started = true;
       pending++;
       var params = 'driveId=0&limit=200&next=0&orderBy=file_id&orderDirection=desc'
         + '&parentFileId=' + pid + '&trashed=false&Page=1&OnlyLookAbnormalFile=0';
@@ -1223,11 +1240,17 @@
           }
         });
         if (state.dupScanned % 20 === 0 && !finished) dupUpdateProgress();
-        if (pending <= 0) done();
+        // 若已无任何在途请求，给出一个很短的“静默窗口”确认确实结束（正常路径快速收尾）；
+        // 否则继续等：只有连续 IDLE_MS 无任何响应时，才认为个别回调丢失并兜底收尾，
+        // 这样既不会过早结束丢文件，也不会因单个请求丢失而永久卡死。
+        if (pending <= 0) { armIdle(SHORT_MS); }
+        else { armIdle(); }
       });
     }
-    // 兜底：若 100ms 后无任何回调（登录失效等），仍结束避免卡死
-    fallback = setTimeout(function () { if (pending <= 0) done(); }, 100);
+    // 全局硬超时兜底，避免异常情况下永久卡死
+    hardTimer = setTimeout(function () { done(); }, MAX_MS);
+    // 若根目录请求也始终不返回（登录失效等），空闲超时兜底
+    armIdle();
     fetchDir(0);
   }
   // 分组：两两比较，把“大致相同”的文件归入同一组
