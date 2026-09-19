@@ -1268,7 +1268,7 @@
     //      该条件恒为 false，会直接停止翻页，导致“目录扫描不完整”。
     //   改为依据响应中的 Total（该目录总条数）：只要已收集条数 < Total 就继续翻页。
     //   若服务端未返回 Total（-1），退回“本页满页则继续”的保守判据，避免漏页。
-    function fetchDir(pid, afterDir) {
+    function fetchDir(pid, afterDir, dirName) {
       var key = String(pid);
       if (visited[key]) { if (afterDir) afterDir(); return; }
       visited[key] = 1;
@@ -1280,13 +1280,15 @@
           var addedThisPage = 0;   // 本页"新增"（去重后）的文件数，用于识别重复翻页
           list.forEach(function (it) {
             if (it.Type === 1) {
-              fetchDir(it.FileId);               // 文件夹：继续递归
+              it._absDir = (dirName ? dirName : "");
+              fetchDir(it.FileId, null, (dirName ? (dirName + "/" + (it.FileName || "")) : (it.FileName || "")));   // 文件夹：继续递归（传递子目录完整路径）
             } else {
               // 【重复文件修复】按 FileId 全局去重，避免同一文件被采集多次
               var fid = (it.FileId !== undefined && it.FileId !== null) ? String(it.FileId) : '';
               var k = fid || (String(it.FileName) + '|' + String(it.Size));
               if (seenFiles[k]) return;          // 已采集过：跳过，不重复计数
               seenFiles[k] = 1;
+              it._absDir = (dirName ? dirName : "");   // 记录文件所在目录（相对根目录的路径）
               files.push(it);                     // 文件：收集
               state.dupScanned++;
               addedThisPage++;
@@ -1317,7 +1319,7 @@
     hardTimer = setTimeout(function () { done(); }, MAX_MS);
     // 若根目录请求也始终不返回（登录失效等），空闲超时兜底
     armIdle();
-    fetchDir(0, function () {
+    fetchDir(0, function () {   /* dirName 省略 → 表示根目录 */
       // 根目录（及其全部子目录链）处理到“本轮已无新在途请求”后收尾。
       // 注意：这里不能用 pending<=0 机械判定，因为子目录是在各页回调里递归发起的；
       // pending<=0 时代表所有已发起的请求都返回了。给出极短静默窗口确认后收尾。
@@ -1337,6 +1339,13 @@
   //   现改为【以每组代表元代表元 rep 为唯一基准】：
   //   新文件只有与 rep 相似才能进该组，从而保证组内每个成员都与代表元相似，
   //   杜绝链式传染导致的误报。rep 取组内第一个成员，保持分组稳定。
+  // 判断两个文件是否属于“同一目录”。
+  //   dir 为空字符串代表根目录；两者都有值时需完全相等。
+  function sameDupDir(a, b) {
+    a = (a === undefined || a === null) ? '' : String(a);
+    b = (b === undefined || b === null) ? '' : String(b);
+    return a === b;
+  }
   function dupGroup(files) {
     var groups = [];
     for (var i = 0; i < files.length; i++) {
@@ -1344,7 +1353,10 @@
       var placed = false;
       for (var g = 0; g < groups.length; g++) {
         // 只与代表元比较，不再遍历组内所有成员
-        if (dupIsSimilar(groups[g].rep, it.FileName)) {
+        // 【误报修复】除了名称相似，还必须属于同一目录才算“重复”，
+        //   否则不同目录下的同名文件会被误判为重复。
+        if (dupIsSimilar(groups[g].rep, it.FileName) &&
+            sameDupDir(groups[g].dir, it._absDir)) {
           groups[g].items.push(it);
           placed = true;
           break;
@@ -1355,6 +1367,7 @@
           key: dupNormalize(it.FileName) || ('g' + i),
           label: it.FileName || '未命名',
           rep: it.FileName || '',        // 代表元：用于后续成员相似性判定
+          dir: it._absDir || '',         // 代表元所在目录（判重必须同目录）
           items: [it]
         });
       }
@@ -1436,7 +1449,7 @@
         nm.className = 'dup-name'; nm.textContent = it.FileName || '未命名';
         var mt = document.createElement('div');
         mt.className = 'dup-meta';
-        var loc = it.NewParentName || it.ParentName || '';
+        var loc = it.NewParentName || it.ParentName || it._absDir || '';
         mt.textContent = fmtSize(it.Size) + (loc ? ' · ' + loc : '');
         bd.appendChild(nm); bd.appendChild(mt);
         row.appendChild(bd);
@@ -1580,7 +1593,7 @@
       var name = document.createElement('div'); name.className = 'file-name'; name.textContent = item.FileName || '未命名';
       var meta = document.createElement('div'); meta.className = 'file-meta';
       // 搜索结果：额外显示文件所在位置（NewParentName / ParentName）
-      var loc = item.NewParentName || item.ParentName || '';
+      var loc = item.NewParentName || item.ParentName || item._absDir || '';
       meta.textContent = (item.Type === 1 ? '文件夹' : fmtSize(item.Size)) + (loc ? ' · ' + loc : '');
       body.appendChild(name); body.appendChild(meta);
       card.appendChild(iconWrap); card.appendChild(body);
