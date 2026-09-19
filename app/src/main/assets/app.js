@@ -1203,6 +1203,13 @@
   function dupFetchAll(cb) {
     var files = [];
     var visited = {};
+    // 【重复文件修复】采集阶段的文件级去重。
+    //   旧实现只按目录 pid 去重，没有文件级去重：一旦某目录的某页被服务端重复返回
+    //   （分页抖动、Total 语义偏差导致多翻一页、或异步递归重复进入），
+    //   同一个文件（同 FileId/同路径）会被 push 两次，最终在查重结果里表现为
+    //   “两个文件名、路径完全一样的条目”，被误当成重复文件。
+    //   这里按 FileId 全局去重（FileId 为空时退回 FileName+Size 组合键）。
+    var seenFiles = {};
     var pending = 0;
     var finished = false;
     var idleTimer = null;
@@ -1270,12 +1277,19 @@
       function nextPage() {
         requestPage(pid, page, function (list, total) {
           collected += list.length;
+          var addedThisPage = 0;   // 本页"新增"（去重后）的文件数，用于识别重复翻页
           list.forEach(function (it) {
             if (it.Type === 1) {
               fetchDir(it.FileId);               // 文件夹：继续递归
             } else {
+              // 【重复文件修复】按 FileId 全局去重，避免同一文件被采集多次
+              var fid = (it.FileId !== undefined && it.FileId !== null) ? String(it.FileId) : '';
+              var k = fid || (String(it.FileName) + '|' + String(it.Size));
+              if (seenFiles[k]) return;          // 已采集过：跳过，不重复计数
+              seenFiles[k] = 1;
               files.push(it);                     // 文件：收集
               state.dupScanned++;
+              addedThisPage++;
             }
           });
           if (state.dupScanned % 20 === 0 && !finished) dupUpdateProgress();
@@ -1283,9 +1297,13 @@
           // 判定是否还有下一页：
           //  1) 服务端给了 Total：collected < total 说明还有
           //  2) 未给 Total：本页满页（>= PAGE_LIMIT）才认为可能还有
+          //  3) 【防重复/防死循环】若本页返回了内容但去重后"新增 0 条"，
+          //     说明服务端在重复返回同一批数据（分页不稳/Total 语义偏差），
+          //     此时必须停止翻页，否则会无限翻页并造成同一文件被反复采集。
           var more;
-          if (total >= 0) more = (collected < total);
-          else more = (list.length >= PAGE_LIMIT);
+          if (list.length === 0) more = false;
+          else if (total >= 0) more = (collected < total && addedThisPage > 0);
+          else more = (list.length >= PAGE_LIMIT && addedThisPage > 0);
           if (more) { page++; nextPage(); return; }
           if (afterDir) afterDir();
         }, function () {
