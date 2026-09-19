@@ -1249,19 +1249,27 @@
             if (onFail) onFail();
             return;
           }
-          onOk(d.data.InfoList);
+          var total = (d.data && typeof d.data.Total === 'number') ? d.data.Total : -1;
+          onOk(d.data.InfoList, total);
         });
       }
       fire();
     }
     // 请求某目录的全部分页，收集完成后回调 afterDir()
+    // 翻页判据【关键修复】：不能依赖 list.length >= PAGE_LIMIT 猜测
+    //   —— 若服务端单页实际返回数小于请求的 limit（如实际上限 100，而我们请求 200），
+    //      该条件恒为 false，会直接停止翻页，导致“目录扫描不完整”。
+    //   改为依据响应中的 Total（该目录总条数）：只要已收集条数 < Total 就继续翻页。
+    //   若服务端未返回 Total（-1），退回“本页满页则继续”的保守判据，避免漏页。
     function fetchDir(pid, afterDir) {
       var key = String(pid);
       if (visited[key]) { if (afterDir) afterDir(); return; }
       visited[key] = 1;
       var page = 1;
+      var collected = 0;      // 本目录已收到的条目数（含文件与子目录）
       function nextPage() {
-        requestPage(pid, page, function (list) {
+        requestPage(pid, page, function (list, total) {
+          collected += list.length;
           list.forEach(function (it) {
             if (it.Type === 1) {
               fetchDir(it.FileId);               // 文件夹：继续递归
@@ -1271,8 +1279,14 @@
             }
           });
           if (state.dupScanned % 20 === 0 && !finished) dupUpdateProgress();
-          // 若本页返回条数达到单页上限，说明可能还有下一页，继续翻页
-          if (list.length >= PAGE_LIMIT && !finished) { page++; nextPage(); return; }
+          if (finished) return;
+          // 判定是否还有下一页：
+          //  1) 服务端给了 Total：collected < total 说明还有
+          //  2) 未给 Total：本页满页（>= PAGE_LIMIT）才认为可能还有
+          var more;
+          if (total >= 0) more = (collected < total);
+          else more = (list.length >= PAGE_LIMIT);
+          if (more) { page++; nextPage(); return; }
           if (afterDir) afterDir();
         }, function () {
           // 该页重试仍失败：不再翻页，直接结束本目录（已计入 failCount）
@@ -1298,24 +1312,33 @@
       if (pending <= 0) { clearInterval(_checkIdle); armIdle(SHORT_MS); }
     }, 250);
   }
-  // 分组：两两比较，把“大致相同”的文件归入同一组
+  // 分组：把“大致相同”的文件归入同一组。
+  // 【误报修复】旧实现是“新文件与组内任意成员相似即并入”，会因相似关系的传递性
+  //   把本不相似的文件串成一组（A≈B、B≈C 但 A≉C 时，A 与 C 被并到同一组，
+  //   渲染出来就像“不是重复却显示重复”）。
+  //   现改为【以每组代表元代表元 rep 为唯一基准】：
+  //   新文件只有与 rep 相似才能进该组，从而保证组内每个成员都与代表元相似，
+  //   杜绝链式传染导致的误报。rep 取组内第一个成员，保持分组稳定。
   function dupGroup(files) {
     var groups = [];
     for (var i = 0; i < files.length; i++) {
       var it = files[i];
       var placed = false;
       for (var g = 0; g < groups.length; g++) {
-        for (var h = 0; h < groups[g].items.length; h++) {
-          if (dupIsSimilar(groups[g].items[h].FileName, it.FileName)) {
-            groups[g].items.push(it);
-            placed = true;
-            break;
-          }
+        // 只与代表元比较，不再遍历组内所有成员
+        if (dupIsSimilar(groups[g].rep, it.FileName)) {
+          groups[g].items.push(it);
+          placed = true;
+          break;
         }
-        if (placed) break;
       }
       if (!placed) {
-        groups.push({ key: dupNormalize(it.FileName) || ('g' + i), label: it.FileName || '未命名', items: [it] });
+        groups.push({
+          key: dupNormalize(it.FileName) || ('g' + i),
+          label: it.FileName || '未命名',
+          rep: it.FileName || '',        // 代表元：用于后续成员相似性判定
+          items: [it]
+        });
       }
     }
     return groups.filter(function (g) { return g.items.length >= 2; })
