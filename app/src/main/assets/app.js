@@ -1449,7 +1449,7 @@
         nm.className = 'dup-name'; nm.textContent = it.FileName || '未命名';
         var mt = document.createElement('div');
         mt.className = 'dup-meta';
-        var loc = it.NewParentName || it.ParentName || it._absDir || '';
+        var loc = it._absDir || it.NewParentName || it.ParentName || '';
         mt.textContent = fmtSize(it.Size) + (loc ? ' · ' + loc : '');
         bd.appendChild(nm); bd.appendChild(mt);
         row.appendChild(bd);
@@ -1593,7 +1593,7 @@
       var name = document.createElement('div'); name.className = 'file-name'; name.textContent = item.FileName || '未命名';
       var meta = document.createElement('div'); meta.className = 'file-meta';
       // 搜索结果：额外显示文件所在位置（NewParentName / ParentName）
-      var loc = item.NewParentName || item.ParentName || item._absDir || '';
+      var loc = item._absDir || item.NewParentName || item.ParentName || '';
       meta.textContent = (item.Type === 1 ? '文件夹' : fmtSize(item.Size)) + (loc ? ' · ' + loc : '');
       body.appendChild(name); body.appendChild(meta);
       card.appendChild(iconWrap); card.appendChild(body);
