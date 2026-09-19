@@ -1210,7 +1210,42 @@
     //   “两个文件名、路径完全一样的条目”，被误当成重复文件。
     //   这里按 FileId 全局去重（FileId 为空时退回 FileName+Size 组合键）。
     var seenFiles = {};
+    // 【限流修复】查重扫描的全局并发闸门：
+    //   旧实现递归展开子目录时“同时”发出所有目录请求（实测冷启动 6 秒内发出 165 个请求），
+    //   远超服务端全局频控阈值，导致大量响应被限流（code=100011），
+    //   结果 = 大量目录取不到 -> 查重结果不完整/看起来失效。
+    //   这里把在途请求数限制在 DUP_CONCURRENCY 以内，并对限流做长退避重试。
+    var DUP_CONCURRENCY = 2;      // 同时在途的查重请求上限（降低并发以规避服务端频控）
+    var _inflight = 0;
+    var _waiters = [];            // 等待闸门的任务队列
+    function _acquire(fn) {
+      if (_inflight < DUP_CONCURRENCY) { _inflight++; fn(); }
+      else _waiters.push(fn);
+    }
+    function _release() {
+      _inflight--;
+      if (_inflight < 0) _inflight = 0;
+      var nx = _waiters.shift();
+      if (nx) { _inflight++; nx(); }
+    }
+    // 【限流修复】请求节流：任意两次查重请求发起之间至少间隔 DUP_GAP_MS，
+    //   把整体请求速率压到服务端频控阈值以下（并发+间隔双重限制）。
+    var DUP_GAP_MS = 350;      // 两次请求之间的最小间隔(ms)
+    var _lastFireAt = 0;
+    function _throttle(fn) {
+      var now = Date.now();
+      var wait = DUP_GAP_MS - (now - _lastFireAt);
+      if (wait <= 0) { _lastFireAt = now; fn(); }
+      else { setTimeout(function () { _lastFireAt = Date.now(); fn(); }, wait); }
+    }
     var pending = 0;
+    // 【扫描不全根因修复】isIdle(): 真正静止 = 无在途请求、无占用名额、无排队任务。
+    //   旧实现只用 pending<=0 判定，而 pending 从未被增减(恒为0)，
+    //   导致每返回一个响应就误判“已静止”并收尾，造成大量目录根本未被扫描。
+    var _retryPending = 0;   // 已排定但尚未执行的重试数(退避期间)
+    function isIdle() {
+      return pending <= 0 && _inflight <= 0 && _waiters.length === 0 && _retryPending <= 0;
+    }
     var finished = false;
     var idleTimer = null;
     var IDLE_MS = 8000;      // 连续 8s 无任何响应才认为结束（防个别回调丢失卡死）
@@ -1231,33 +1266,46 @@
       if (idleTimer) clearTimeout(idleTimer);
       idleTimer = setTimeout(function () {
         // 只有确实没有任何在途请求时才收尾
-        if (pending <= 0) done();
+        if (isIdle()) done();
         else armIdle();
       }, ms || IDLE_MS);
     }
     // 带重试地请求某目录的某一页；onOk(pageList) 成功后回调，全部重试失败则 onFail()
     function requestPage(pid, page, onOk, onFail) {
       var attempt = 0;
+      var MAX_ATTEMPT = 6;       // 含首次最多尝试 6 次（应对限流）
       function fire() {
         attempt++;
-        pending++;
-        var params = 'driveId=0&limit=' + PAGE_LIMIT + '&next=0&orderBy=file_id&orderDirection=desc'
-          + '&parentFileId=' + pid + '&trashed=false&Page=' + page + '&OnlyLookAbnormalFile=0';
-        api('GET', API.list + '?' + params, '', true, function (d) {
-          pending--;
-          var okResp = !!(d && d.ok !== false && d.data && d.data.InfoList);
-          if (!okResp) {
-            if (attempt < MAX_RETRY && !finished) {
-              // 指数退避后重试（200/400/600ms）
-              setTimeout(fire, 200 * attempt);
+        // 先申请并发闸门（限并发）+ 节流（限速率），两者都通过才真正发请求
+        _acquire(function () {
+         _throttle(function () {
+          pending++;   // 【扫描不全根因修复】计入在途请求
+          var params = 'driveId=0&limit=' + PAGE_LIMIT + '&next=0&orderBy=file_id&orderDirection=desc'
+            + '&parentFileId=' + pid + '&trashed=false&Page=' + page + '&OnlyLookAbnormalFile=0';
+          api('GET', API.list + '?' + params, '', true, function (d) {
+            pending--;   // 【扫描不全根因修复】请求返回，移出在途
+            _release();
+            var okResp = !!(d && d.ok !== false && d.data && d.data.InfoList);
+            if (!okResp) {
+              // 识别限流：服务端返回 code=100011（请勿频繁操作）
+              var code = (d && d.data && typeof d.data.code === 'number') ? d.data.code
+                       : ((d && typeof d.code === 'number') ? d.code : 0);
+              var throttled = (code === 100011);
+              if (attempt < MAX_ATTEMPT && !finished) {
+                // 限流：长退避（指数翻倍，封顶12s）；其它失败：短退避
+                var delay = throttled ? Math.min(2000 * Math.pow(2, attempt - 1), 12000) : (250 * attempt);
+                _retryPending++;   // 【扫描不全根因修复】标记“有排定重试”，防止被误判静止
+                setTimeout(function () { _retryPending--; if (!finished) fire(); }, delay);
+                return;
+              }
+              failCount++;
+              if (onFail) onFail();
               return;
             }
-            failCount++;
-            if (onFail) onFail();
-            return;
-          }
-          var total = (d.data && typeof d.data.Total === 'number') ? d.data.Total : -1;
-          onOk(d.data.InfoList, total);
+            var total = (d.data && typeof d.data.Total === 'number') ? d.data.Total : -1;
+            onOk(d.data.InfoList, total);
+          });
+         });
         });
       }
       fire();
@@ -1323,13 +1371,13 @@
       // 根目录（及其全部子目录链）处理到“本轮已无新在途请求”后收尾。
       // 注意：这里不能用 pending<=0 机械判定，因为子目录是在各页回调里递归发起的；
       // pending<=0 时代表所有已发起的请求都返回了。给出极短静默窗口确认后收尾。
-      if (pending <= 0) armIdle(SHORT_MS);
+      if (isIdle()) armIdle(SHORT_MS);
       else armIdle();
     });
     // 兜底：任意一次响应结束后检查是否已静止（覆盖递归子目录全部返回后的收尾）
     var _checkIdle = setInterval(function () {
       if (finished) { clearInterval(_checkIdle); return; }
-      if (pending <= 0) { clearInterval(_checkIdle); armIdle(SHORT_MS); }
+      if (isIdle()) { clearInterval(_checkIdle); armIdle(SHORT_MS); }
     }, 250);
   }
   // 分组：把“大致相同”的文件归入同一组。
