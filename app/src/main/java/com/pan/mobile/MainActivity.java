@@ -68,7 +68,10 @@ public class MainActivity extends Activity {
 
     private WebView webView;
     private final Handler handler = new Handler(Looper.getMainLooper());
-    private final ExecutorService executor = Executors.newFixedThreadPool(4);
+    // 并发工作线程数：全盘查重会同时发起大量 file/list 请求（每个子目录 1 个），
+    // 线程过少会导致大量请求排队、甚至在 20s readTimeout 下超时，从而“部分目录静默丢失”
+    // （表现为两次扫描文件数不一致）。提升到 12 以覆盖递归遍历的并发峰值。
+    private final ExecutorService executor = Executors.newFixedThreadPool(12);
     private SharedPreferences prefs;
 
     private static final String PREF = "pan_prefs";
