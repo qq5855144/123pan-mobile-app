@@ -1192,25 +1192,33 @@
     }
   }
   // 递归拉取全盘文件（从根目录 parentFileId=0 开始）
-  // 关键：只有当所有在途请求都返回（pending===0）后才结束；
-  //       空闲超时 idleTimer 在每次收到响应时重置，防止个别请求丢失导致永久卡死。
+  // 关键：
+  //  1) 只有当所有在途请求都返回（pending===0）后才结束；空闲超时 idleTimer 每次响应都重新武装，
+  //     防止个别回调丢失导致永久卡死。
+  //  2) 【分页】旧实现只取 Page=1，一旦某个目录条目数超过服务端单页上限，超出的文件会被静默丢弃。
+  //     现改为按页循环拉取，直到某页返回数 < limit，确保目录内容完整。
+  //  3) 【重试】单次请求失败（网络抖动/超时，原生侧返回 {ok:false}）时自动重试若干次；
+  //     重试仍失败则计入 failCount 并通过扫描汇总提示“有目录未取到”，
+  //     绝不把失败静默当成“空目录”，避免两次扫描文件数不一致（时有时无）。
   function dupFetchAll(cb) {
     var files = [];
     var visited = {};
     var pending = 0;
     var finished = false;
-    var started = false;
     var idleTimer = null;
     var IDLE_MS = 8000;      // 连续 8s 无任何响应才认为结束（防个别回调丢失卡死）
     var SHORT_MS = 400;      // 已无在途请求时的快速收尾静默窗口
     var MAX_MS = 180000;     // 全局硬超时 3 分钟
+    var PAGE_LIMIT = 200;    // 每页请求条数
+    var MAX_RETRY = 3;       // 单页请求失败后的最大重试次数
+    var failCount = 0;       // 重试后仍失败的“页”数（用于提示用户结果可能不完整）
     var hardTimer = null;
     function done() {
       if (finished) return;
       finished = true;
       if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
       if (hardTimer) { clearTimeout(hardTimer); hardTimer = null; }
-      cb(files);
+      cb(files, failCount);
     }
     function armIdle(ms) {
       if (idleTimer) clearTimeout(idleTimer);
@@ -1220,38 +1228,75 @@
         else armIdle();
       }, ms || IDLE_MS);
     }
-    function fetchDir(pid) {
-      var key = String(pid);
-      if (visited[key]) return;
-      visited[key] = 1;
-      started = true;
-      pending++;
-      var params = 'driveId=0&limit=200&next=0&orderBy=file_id&orderDirection=desc'
-        + '&parentFileId=' + pid + '&trashed=false&Page=1&OnlyLookAbnormalFile=0';
-      api('GET', API.list + '?' + params, '', true, function (d) {
-        pending--;
-        var list = (d && d.data && d.data.InfoList) ? d.data.InfoList : [];
-        list.forEach(function (it) {
-          if (it.Type === 1) {
-            fetchDir(it.FileId);                 // 文件夹：继续递归
-          } else {
-            files.push(it);                       // 文件：收集
-            state.dupScanned++;
+    // 带重试地请求某目录的某一页；onOk(pageList) 成功后回调，全部重试失败则 onFail()
+    function requestPage(pid, page, onOk, onFail) {
+      var attempt = 0;
+      function fire() {
+        attempt++;
+        pending++;
+        var params = 'driveId=0&limit=' + PAGE_LIMIT + '&next=0&orderBy=file_id&orderDirection=desc'
+          + '&parentFileId=' + pid + '&trashed=false&Page=' + page + '&OnlyLookAbnormalFile=0';
+        api('GET', API.list + '?' + params, '', true, function (d) {
+          pending--;
+          var okResp = !!(d && d.ok !== false && d.data && d.data.InfoList);
+          if (!okResp) {
+            if (attempt < MAX_RETRY && !finished) {
+              // 指数退避后重试（200/400/600ms）
+              setTimeout(fire, 200 * attempt);
+              return;
+            }
+            failCount++;
+            if (onFail) onFail();
+            return;
           }
+          onOk(d.data.InfoList);
         });
-        if (state.dupScanned % 20 === 0 && !finished) dupUpdateProgress();
-        // 若已无任何在途请求，给出一个很短的“静默窗口”确认确实结束（正常路径快速收尾）；
-        // 否则继续等：只有连续 IDLE_MS 无任何响应时，才认为个别回调丢失并兜底收尾，
-        // 这样既不会过早结束丢文件，也不会因单个请求丢失而永久卡死。
-        if (pending <= 0) { armIdle(SHORT_MS); }
-        else { armIdle(); }
-      });
+      }
+      fire();
+    }
+    // 请求某目录的全部分页，收集完成后回调 afterDir()
+    function fetchDir(pid, afterDir) {
+      var key = String(pid);
+      if (visited[key]) { if (afterDir) afterDir(); return; }
+      visited[key] = 1;
+      var page = 1;
+      function nextPage() {
+        requestPage(pid, page, function (list) {
+          list.forEach(function (it) {
+            if (it.Type === 1) {
+              fetchDir(it.FileId);               // 文件夹：继续递归
+            } else {
+              files.push(it);                     // 文件：收集
+              state.dupScanned++;
+            }
+          });
+          if (state.dupScanned % 20 === 0 && !finished) dupUpdateProgress();
+          // 若本页返回条数达到单页上限，说明可能还有下一页，继续翻页
+          if (list.length >= PAGE_LIMIT && !finished) { page++; nextPage(); return; }
+          if (afterDir) afterDir();
+        }, function () {
+          // 该页重试仍失败：不再翻页，直接结束本目录（已计入 failCount）
+          if (afterDir) afterDir();
+        });
+      }
+      nextPage();
     }
     // 全局硬超时兜底，避免异常情况下永久卡死
     hardTimer = setTimeout(function () { done(); }, MAX_MS);
     // 若根目录请求也始终不返回（登录失效等），空闲超时兜底
     armIdle();
-    fetchDir(0);
+    fetchDir(0, function () {
+      // 根目录（及其全部子目录链）处理到“本轮已无新在途请求”后收尾。
+      // 注意：这里不能用 pending<=0 机械判定，因为子目录是在各页回调里递归发起的；
+      // pending<=0 时代表所有已发起的请求都返回了。给出极短静默窗口确认后收尾。
+      if (pending <= 0) armIdle(SHORT_MS);
+      else armIdle();
+    });
+    // 兜底：任意一次响应结束后检查是否已静止（覆盖递归子目录全部返回后的收尾）
+    var _checkIdle = setInterval(function () {
+      if (finished) { clearInterval(_checkIdle); return; }
+      if (pending <= 0) { clearInterval(_checkIdle); armIdle(SHORT_MS); }
+    }, 250);
   }
   // 分组：两两比较，把“大致相同”的文件归入同一组
   function dupGroup(files) {
@@ -1289,22 +1334,25 @@
     var su = $('dup-summary'); if (su) su.textContent = '';
     var bodyEl = $('dup-body');
     if (bodyEl) bodyEl.innerHTML = '<div class="dup-loading"><div class="loading-dot">扫描中…</div><p>正在递归遍历所有文件夹，请稍候</p></div>';
-    dupFetchAll(function (files) {
+    dupFetchAll(function (files, failCount) {
       state.dupScanning = false;
       var groups = dupGroup(files);
       state.dupGroups = groups;
-      renderDupResult(groups, files.length);
+      renderDupResult(groups, files.length, failCount);
     });
   }
   // 渲染查重结果
-  function renderDupResult(groups, totalFiles) {
+  function renderDupResult(groups, totalFiles, failCount) {
     var su = $('dup-summary');
     var dupCount = 0;
     groups.forEach(function (g) { dupCount += g.items.length; });
+    var warn = (failCount && failCount > 0)
+      ? ('<br><span style="color:#e6a23c">⚠ 有 ' + failCount + ' 个目录未能取到，结果可能不完整，请重试</span>')
+      : '';
     if (su) {
-      su.innerHTML = groups.length
+      su.innerHTML = (groups.length
         ? ('共扫描 <b>' + totalFiles + '</b> 个文件，发现 <b>' + groups.length + '</b> 组重复（' + dupCount + ' 个文件）')
-        : ('共扫描 <b>' + totalFiles + '</b> 个文件，未发现重复文件 👍');
+        : ('共扫描 <b>' + totalFiles + '</b> 个文件，未发现重复文件 👍')) + warn;
     }
     renderDupRows(groups);
     refreshDupBar();
