@@ -117,6 +117,10 @@
     selectMode: false,        // 是否处于多选（整理）模式
     selectedMap: {},          // 多选模式下选中的文件/文件夹 fileId -> item
     pickerState: null,        // 文件夹选择器状态 {dir, path:[{id,name}]}
+    dupGroups: [],            // 查重结果：重复文件分组 [{key,label,items:[...]}]
+    dupSelected: {},         // 查重结果中选中的 fileId -> item
+    dupScanning: false,      // 是否正在全盘扫描
+    dupScanned: 0,           // 已扫描文件数
     orderBy: (_sortPref && _sortPref.by) || 'file_id',       // 列表排序字段（file_name/file_size/updated_at/file_id）
     orderDirection: (_sortPref && _sortPref.dir) || 'desc'   // 排序方向 asc/desc
   };
@@ -231,6 +235,7 @@
     plus: '<path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
     check: '<path d="M20 6L9 17l-5-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
     sort: '<path d="M3 6h12M3 12h9M3 18h6M17 4v12M14 13l3 3 3-3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
+    'find-dup': '<rect x="3" y="3" width="12" height="12" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><rect x="9" y="9" width="12" height="12" rx="2" fill="none" stroke="currentColor" stroke-width="2"/>',
     link: '<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
     refresh: '<path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M21 3v5h-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
     broom: '<path d="M13.5 10.5L22 2m-7.266 11.841a2 2 0 0 0-.314-2.42L12.58 9.58a2 2 0 0 0-2.421-.314l-7.657 4.461A1 1 0 0 0 2.3 15.3l6.403 6.403a1 1 0 0 0 1.571-.204zM5 18l2-2m.699-5.3l5.602 5.601" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
@@ -1085,6 +1090,284 @@
         }
       });
   }
+
+  // ==================== 一键查重（全盘重复文件） ====================
+  // 名称归一化：去扩展名 + 去副本后缀(1)/(2)/[1]/【1】 + 去副本/copy/备份等尾缀 + 去空白标点 + 小写
+  function dupNormalize(name) {
+    var s = String(name || '');
+    s = s.replace(/\.[A-Za-z0-9]{1,8}$/, '');                       // 去扩展名
+    s = s.replace(/[\s\.\-_]*[\(\[【（]\s*(?:副本|copy|拷贝|c)?\s*\d+\s*[\)\]】）]\s*$/gi, ''); // 去 (1)/（2）/[1]/【1】
+    s = s.replace(/[\s\-_\.]*(?:副本|拷贝|复制|copy|备份|backup|new|新建|最终版|最终|final|修改版|最新)\s*$/gi, ''); // 去常见尾缀
+    s = s.replace(/[\s\u3000]+/g, '')                                // 去空白
+         .replace(/[\.\-_·]+/g, '');                                 // 去分隔符
+    s = s.toLowerCase();
+    return s;
+  }
+  // 编辑距离相似度（0~1），用于“名称大致匹配”的兜底判定
+  function dupSimilarity(a, b) {
+    a = a || ''; b = b || '';
+    if (a === b) return 1;
+    var la = a.length, lb = b.length;
+    if (Math.abs(la - lb) > 12) return 0;   // 长度差过大直接判不相似（提升性能）
+    if (!la || !lb) return 0;
+    var prev = [], cur = [], i, j;
+    for (j = 0; j <= lb; j++) prev[j] = j;
+    for (i = 1; i <= la; i++) {
+      cur[0] = i;
+      for (j = 1; j <= lb; j++) {
+        var cost = (a.charAt(i - 1) === b.charAt(j - 1)) ? 0 : 1;
+        cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost);
+      }
+      prev = cur.slice();
+    }
+    var dist = prev[lb];
+    return 1 - dist / Math.max(la, lb);
+  }
+  // 判断两个文件名是否“大致相同”（归一化后相等或相似度达标）
+  function dupIsSimilar(a, b) {
+    var na = dupNormalize(a), nb = dupNormalize(b);
+    if (!na || !nb) return false;
+    if (na === nb) return true;
+    // 归一化后有包含关系（如 “报告” 与 “报告终稿”）也算匹配
+    if (na.length >= 2 && nb.length >= 2 && (na.indexOf(nb) >= 0 || nb.indexOf(na) >= 0)) return true;
+    return dupSimilarity(na, nb) >= 0.82;
+  }
+  // 更新扫描进度文案
+  function dupUpdateProgress() {
+    var su = $('dup-summary');
+    if (su) su.textContent = '正在扫描全盘文件… 已发现 ' + state.dupScanned + ' 个文件';
+    var bodyEl = $('dup-body');
+    if (bodyEl && !bodyEl.querySelector('.dup-loading')) {
+      bodyEl.innerHTML = '<div class="dup-loading"><div class="loading-dot">扫描中…</div><p>正在递归遍历所有文件夹，请稍候</p></div>';
+    }
+  }
+  // 递归拉取全盘文件（从根目录 parentFileId=0 开始）
+  function dupFetchAll(cb) {
+    var files = [];
+    var visited = {};
+    var pending = 0;
+    var finished = false;
+    var fallback = null;
+    function done() {
+      if (finished) return;
+      finished = true;
+      if (fallback) { clearTimeout(fallback); fallback = null; }
+      cb(files);
+    }
+    function fetchDir(pid) {
+      var key = String(pid);
+      if (visited[key]) return;
+      visited[key] = 1;
+      pending++;
+      var params = 'driveId=0&limit=200&next=0&orderBy=file_id&orderDirection=desc'
+        + '&parentFileId=' + pid + '&trashed=false&Page=1&OnlyLookAbnormalFile=0';
+      api('GET', API.list + '?' + params, '', true, function (d) {
+        pending--;
+        var list = (d && d.data && d.data.InfoList) ? d.data.InfoList : [];
+        list.forEach(function (it) {
+          if (it.Type === 1) {
+            fetchDir(it.FileId);                 // 文件夹：继续递归
+          } else {
+            files.push(it);                       // 文件：收集
+            state.dupScanned++;
+          }
+        });
+        if (state.dupScanned % 20 === 0 && !finished) dupUpdateProgress();
+        if (pending <= 0) done();
+      });
+    }
+    // 兜底：若 100ms 后无任何回调（登录失效等），仍结束避免卡死
+    fallback = setTimeout(function () { if (pending <= 0) done(); }, 100);
+    fetchDir(0);
+  }
+  // 分组：两两比较，把“大致相同”的文件归入同一组
+  function dupGroup(files) {
+    var groups = [];
+    for (var i = 0; i < files.length; i++) {
+      var it = files[i];
+      var placed = false;
+      for (var g = 0; g < groups.length; g++) {
+        for (var h = 0; h < groups[g].items.length; h++) {
+          if (dupIsSimilar(groups[g].items[h].FileName, it.FileName)) {
+            groups[g].items.push(it);
+            placed = true;
+            break;
+          }
+        }
+        if (placed) break;
+      }
+      if (!placed) {
+        groups.push({ key: dupNormalize(it.FileName) || ('g' + i), label: it.FileName || '未命名', items: [it] });
+      }
+    }
+    return groups.filter(function (g) { return g.items.length >= 2; })
+                 .sort(function (a, b) { return b.items.length - a.items.length; });
+  }
+  // 打开查重页并开始全盘扫描
+  function openDupFinder() {
+    if (state.searching) exitSearch();
+    if (state.selectMode) exitSelectMode();
+    state.dupGroups = [];
+    state.dupSelected = {};
+    state.dupScanning = true;
+    state.dupScanned = 0;
+    show($('dup-page'));
+    hide($('dup-bar'));
+    var su = $('dup-summary'); if (su) su.textContent = '';
+    var bodyEl = $('dup-body');
+    if (bodyEl) bodyEl.innerHTML = '<div class="dup-loading"><div class="loading-dot">扫描中…</div><p>正在递归遍历所有文件夹，请稍候</p></div>';
+    dupFetchAll(function (files) {
+      state.dupScanning = false;
+      var groups = dupGroup(files);
+      state.dupGroups = groups;
+      renderDupResult(groups, files.length);
+    });
+  }
+  // 渲染查重结果
+  function renderDupResult(groups, totalFiles) {
+    var su = $('dup-summary');
+    var dupCount = 0;
+    groups.forEach(function (g) { dupCount += g.items.length; });
+    if (su) {
+      su.innerHTML = groups.length
+        ? ('共扫描 <b>' + totalFiles + '</b> 个文件，发现 <b>' + groups.length + '</b> 组重复（' + dupCount + ' 个文件）')
+        : ('共扫描 <b>' + totalFiles + '</b> 个文件，未发现重复文件 👍');
+    }
+    renderDupRows(groups);
+    refreshDupBar();
+  }
+  // 渲染分组行
+  function renderDupRows(groups) {
+    var body = $('dup-body');
+    if (!body) return;
+    body.innerHTML = '';
+    if (!groups.length) {
+      body.innerHTML = '<div class="panel-empty"><div class="panel-icon" data-icon="find-dup"></div><p>太棒了，没有发现名称重复的文件</p></div>';
+      injectIcons(body);
+      return;
+    }
+    groups.forEach(function (g, gi) {
+      var wrap = document.createElement('div');
+      wrap.className = 'dup-group';
+      var head = document.createElement('div');
+      head.className = 'dup-group-head';
+      head.textContent = (g.label || '未命名') + ' · ' + g.items.length + ' 个相似文件';
+      wrap.appendChild(head);
+      g.items.forEach(function (it, ii) {
+        var row = document.createElement('div');
+        row.className = 'dup-row';
+        row.setAttribute('data-id', String(it.FileId));
+        var preSel = !!state.dupSelected[it.FileId];
+        // 默认勾选：每组第 0 个作为“保留”，其余自动选中
+        if (ii > 0 && !preSel) { state.dupSelected[it.FileId] = it; preSel = true; }
+        var ck = document.createElement('span');
+        ck.className = 'dup-check' + (preSel ? ' on' : '');
+        ck.textContent = preSel ? '✓' : '';
+        row.appendChild(ck);
+        var iw = document.createElement('div');
+        iw.className = 'dup-icon fi-' + iconFor(it);
+        iw.appendChild(makeIcon(iconFor(it), 'file-icon'));
+        row.appendChild(iw);
+        var bd = document.createElement('div');
+        bd.className = 'dup-info';
+        var nm = document.createElement('div');
+        nm.className = 'dup-name'; nm.textContent = it.FileName || '未命名';
+        var mt = document.createElement('div');
+        mt.className = 'dup-meta';
+        var loc = it.NewParentName || it.ParentName || '';
+        mt.textContent = fmtSize(it.Size) + (loc ? ' · ' + loc : '');
+        bd.appendChild(nm); bd.appendChild(mt);
+        row.appendChild(bd);
+        var badge = document.createElement('span');
+        if (ii === 0) {
+          badge.className = 'dup-keep-badge'; badge.textContent = '保留';
+        } else {
+          badge.className = 'dup-sel-badge';
+          badge.textContent = '重复';
+        }
+        row.appendChild(badge);
+        row.addEventListener('click', function () { toggleDupSelect(it, row, ck); });
+        wrap.appendChild(row);
+      });
+      body.appendChild(wrap);
+    });
+  }
+  // 切换某文件选中状态
+  function toggleDupSelect(item, row, ck) {
+    var id = String(item.FileId);
+    if (state.dupSelected[id]) { delete state.dupSelected[id]; }
+    else { state.dupSelected[id] = item; }
+    var on = !!state.dupSelected[id];
+    ck.classList.toggle('on', on);
+    ck.textContent = on ? '✓' : '';
+    row.classList.toggle('sel', on);
+    refreshDupBar();
+  }
+  // 刷新底部操作栏
+  function refreshDupBar() {
+    var n = Object.keys(state.dupSelected).length;
+    var bar = $('dup-bar');
+    if (!bar) return;
+    if (n > 0) { show(bar); } else { hide(bar); }
+    var si = $('dup-selinfo');
+    if (si) si.textContent = '已选 ' + n + ' 项';
+  }
+  // 关闭查重页
+  function closeDupFinder() {
+    hide($('dup-page'));
+    state.dupGroups = [];
+    state.dupSelected = {};
+    state.dupScanning = false;
+  }
+  // 整理：把选中的重复项移动到指定文件夹（复用移动选择器）
+  function dupOrganize() {
+    var n = Object.keys(state.dupSelected).length;
+    if (!n) { toast('请先选择要整理的重复文件'); return; }
+    var picker = $('move-picker');
+    if (!picker) { toast('移动功能不可用'); return; }
+    // 把查重选中项写入多选状态，复用 openMovePicker / confirmMove 流程
+    state.selectedMap = {};
+    for (var k in state.dupSelected) state.selectedMap[k] = state.dupSelected[k];
+    openMovePicker();
+  }
+  // 删除重复项：把选中的重复文件移入回收站
+  function dupDeleteSelected() {
+    var ids = Object.keys(state.dupSelected);
+    if (!ids.length) { toast('请先选择要删除的重复文件'); return; }
+    showConfirm('确认删除选中的 ' + ids.length + ' 个重复文件？删除后将移入回收站', function () {
+      var fileIdList = ids.map(function (k) { return { FileId: Number(k) || 0 }; });
+      api('POST', API.trash,
+        JSON.stringify({
+          RequestSource: null,
+          driveId: 0,
+          event: 'intoRecycle',
+          fileTrashInfoList: fileIdList,
+          operatePlace: 1,
+          operation: true
+        }),
+        true,
+        function (d) {
+          if (d && d.code === 0) {
+            var removed = {};
+            ids.forEach(function (k) { delete state.dupSelected[k]; removed[String(k)] = 1; });
+            var ng = [];
+            state.dupGroups.forEach(function (g) {
+              g.items = g.items.filter(function (it) { return !removed[String(it.FileId)]; });
+              if (g.items.length >= 2) ng.push(g);
+            });
+            state.dupGroups = ng;
+            toast('已将 ' + ids.length + ' 项移入回收站');
+            renderDupResult(ng, state.dupScanned);
+            if (!ng.length && $('dup-summary')) {
+              $('dup-summary').innerHTML = '重复文件已全部处理完毕 ✅';
+            }
+          } else {
+            toast((d && d.message) || '删除失败');
+          }
+        });
+    });
+  }
+
   // ---------- 全局搜索（全盘文件） ----------
   function doSearch(keyword) {
     keyword = (keyword || '').trim();
@@ -3041,6 +3324,17 @@
         if (st <= 0) tb.classList.remove('toolbar-hidden'); // 回顶：确保显示
       });
     })();
+    // 一键查重：打开面板 / 返回 / 重新扫描 / 整理 / 删除重复项
+    var topDupBtn = $('top-dup');
+    if (topDupBtn) topDupBtn.addEventListener('click', openDupFinder);
+    var dupBack = $('dup-back');
+    if (dupBack) dupBack.addEventListener('click', closeDupFinder);
+    var dupRescan = $('dup-rescan');
+    if (dupRescan) dupRescan.addEventListener('click', openDupFinder);
+    var dupOrganizeBtn = $('dup-organize');
+    if (dupOrganizeBtn) dupOrganizeBtn.addEventListener('click', dupOrganize);
+    var dupDeleteBtn = $('dup-delete');
+    if (dupDeleteBtn) dupDeleteBtn.addEventListener('click', dupDeleteSelected);
     // 排序：打开面板 / 选择字段 / 切换方向
     var topSortBtn = $('top-sort');
     if (topSortBtn) topSortBtn.addEventListener('click', openSortSheet);
