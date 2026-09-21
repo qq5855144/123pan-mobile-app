@@ -94,6 +94,7 @@
   var state = {
     token: '',
     user: '',
+    profile: null,            // 用户头像/昵称（异步缓存，来自 /b/api/user/info）
     view: 'files',
     currentDir: 0,          // 当前文件夹 parentFileId（0 = 根目录）
     breadcrumb: [],          // [{id, name}]
@@ -109,6 +110,8 @@
     upQueue: loadUpQueue(),       // 上传任务队列（串行调度 [{name,path,status,done,total}]）
     transferTab: (function () { try { return localStorage.getItem('pan_ttab') === 'upload' ? 'upload' : 'download'; } catch (e) { return 'download'; } })(), // 传输页子页签：download/upload
     autoUpdate: (function () { try { return localStorage.getItem('pan_autoupdate') !== '0'; } catch (e) { return true; } })(), //自动更新开关（默认开启）
+    themeMode: (function () { try { return localStorage.getItem('pan_theme') || 'auto'; } catch (e) { return 'auto'; } })(), // 主题：auto/light/dark
+    transferKeepWake: false, // 传输进行中强制保持屏幕常亮
     updateInfo: null, //待下载的新版本信息 {version, url}
     progTimer: null,          // 下载进度轮询定时器
     searching: false,         // 是否处于全局搜索态
@@ -291,6 +294,11 @@
       if (sec) sec.classList.toggle('hidden', k !== v);
       if (tab) tab.classList.toggle('active', k === v);
     });
+    // 离开文件页前保存滚动位置，回来后恢复
+    if (state.view === 'files' && v !== 'files') {
+      var sc = $('content');
+      state.filesScrollTop = sc ? sc.scrollTop : 0;
+    }
     // 离开文件视图时退出多选（整理）模式，避免状态残留
     if (v !== 'files' && state.selectMode) {
       state.selectMode = false;
@@ -298,6 +306,12 @@
       hide($('select-toolbar'));
       var ft = $('file-toolbar');
       if (ft && ft.classList.contains('hidden')) show(ft);
+    }
+    // 恢复文件列表滚动位置
+    var sc2 = $('content');
+    if (sc2 && state.filesScrollTop) {
+      var target = state.filesScrollTop;
+      requestAnimationFrame(function () { sc2.scrollTop = target; });
     }
     if (v === 'mine') loadMine();
     if (v === 'recycle') loadRecycle();
@@ -524,6 +538,22 @@
     var ups = state.upQueue || loadUpQueue();
     state.upQueue = ups;
     if (!box) return;
+    // 离线下载页：显示表单
+    if (state.transferTab === 'offline') {
+      if (tbD) tbD.classList.remove('active');
+      if (tbU) tbU.classList.remove('active');
+      var tbo = $('ttab-offline');
+      if (tbo) tbo.classList.add('active');
+      if (empty) hide(empty);
+      box.innerHTML = '<div style="padding:16px;">'
+        + '<div style="font-size:13px;color:var(--fg3,#999);margin-bottom:8px;">输入磁力链接或 HTTP(S) 直链，提交后云端离线下载到你的网盘</div>'
+        + '<textarea id="offline-url" placeholder="magnet:?xt=... 或 https://..." style="width:100%;height:90px;border:1px solid var(--divider,#ddd);border-radius:8px;padding:10px;box-sizing:border-box;font-size:14px;background:var(--card,#fff);color:var(--fg,#333);resize:vertical;"></textarea>'
+        + '<button id="offline-go" style="margin-top:12px;width:100%;padding:12px;border:none;border-radius:8px;background:var(--accent,#2563eb);color:#fff;font-size:15px;">提交离线下载</button>'
+        + '<div id="offline-result" style="margin-top:12px;font-size:13px;color:var(--fg2,#666);line-height:1.6;"></div>'
+        + '</div>';
+      $('offline-go').addEventListener('click', doOfflineDownload);
+      return;
+    }
     var tab = state.transferTab === 'upload' ? 'upload' : 'download';
     var list = (tab === 'upload') ? ups : arr;
     // 同步子页签高亮
@@ -685,20 +715,50 @@
         toast('正在重试...');
       });
     });
-    // 删除按钮：结束原生任务（未完成的半成品文件一并删除）并从传输列表移除该条记录
+    // 删除按钮：结束原生任务并从传输列表移除该条记录
     box.querySelectorAll('.transfer-del').forEach(function (btn) {
       btn.addEventListener('click', function (e) {
         e.stopPropagation();
         var idx = Number(btn.getAttribute('data-i'));
         var t = state.transfers && state.transfers[idx];
         if (!t) return;
-        if (t.stream && Number(t.id) >= 900000000 && bridge && bridge.deleteDownloadTask) {
-          try { bridge.deleteDownloadTask(Number(t.id)); } catch (e2) {}
+        var isDone = (t.status === 'completed' || t.status === 'done' || Number(t.status) === 8 || Number(t.status) === 16);
+        var delFile = function () {
+          if (t.stream && Number(t.id) >= 900000000 && bridge && bridge.deleteDownloadTask) {
+            try { bridge.deleteDownloadTask(Number(t.id)); } catch (e2) {}
+          }
+          state.transfers.splice(idx, 1);
+          saveTransfers();
+          renderTransfers();
+          toast('已删除传输记录「' + (t.name || '') + '」');
+        };
+        if (isDone && t.name && bridge && bridge.deleteDownloadedFile) {
+          var items = [
+            { label: '仅删记录', cls: '', fn: function () { closeSheet(); delFile(); } },
+            { label: '删记录和文件', cls: 'warn', fn: function () {
+                closeSheet();
+                try { bridge.deleteDownloadedFile(t.name); } catch (e3) {}
+                delFile();
+              } }
+          ];
+          $('sheet-title').textContent = t.name || '未命名';
+          var grid = $('sheet-grid');
+          grid.innerHTML = '';
+          items.forEach(function (it) {
+            var el = document.createElement('div');
+            el.className = 'sheet-grid-item ' + it.cls;
+            var ic = document.createElement('div'); ic.className = 'sgi-icon';
+            ic.textContent = it.label;
+            el.appendChild(ic);
+            el.title = it.label;
+            el.addEventListener('click', it.fn);
+            grid.appendChild(el);
+          });
+          grid.style.gridTemplateColumns = 'repeat(2,1fr)';
+          show($('action-sheet'));
+          return;
         }
-        state.transfers.splice(idx, 1);
-        saveTransfers();
-        renderTransfers();
-        toast('已删除传输记录「' + (t.name || '') + '」');
+        delFile();
       });
     });
     // 上传任务：取消 / 重试 / 移除记录
@@ -1691,7 +1751,8 @@
         { icon: 'open', label: '打开', cls: 'primary', fn: function () { closeSheet(); openDir(item); } },
         { icon: 'share', label: '分享', cls: '', fn: function () { closeSheet(); doShare(item); } },
         { icon: 'rename', label: '重命名', cls: '', fn: function () { closeSheet(); onAction('rename', item); } },
-        { icon: 'trash', label: '删除', cls: 'warn', fn: function () { closeSheet(); onAction('delete', item); } }
+        { icon: 'trash', label: '删除', cls: 'warn', fn: function () { closeSheet(); onAction('delete', item); } },
+        { icon: 'detail', label: '详细信息', cls: '', fn: function () { closeSheet(); showFileDetail(item); } },
       ];
     } else {
       items = [
@@ -1699,7 +1760,8 @@
         { icon: 'download', label: '下载', cls: '', fn: function () { closeSheet(); doDownload(item); } },
         { icon: 'share', label: '分享', cls: '', fn: function () { closeSheet(); doShare(item); } },
         { icon: 'rename', label: '重命名', cls: '', fn: function () { closeSheet(); onAction('rename', item); } },
-        { icon: 'trash', label: '删除', cls: 'warn', fn: function () { closeSheet(); onAction('delete', item); } }
+        { icon: 'trash', label: '删除', cls: 'warn', fn: function () { closeSheet(); onAction('delete', item); } },
+        { icon: 'detail', label: '详细信息', cls: '', fn: function () { closeSheet(); showFileDetail(item); } },
       ];
     }
     items.forEach(function (it) {
@@ -1714,8 +1776,27 @@
       grid.appendChild(el);
     });
     // 文件菜单 5 项时一行五列显示（其它菜单保持原有四列布局）
-    grid.style.gridTemplateColumns = (items.length === 5) ? 'repeat(5,1fr)' : '';
+    grid.style.gridTemplateColumns = (items.length === 6) ? 'repeat(6,1fr)' : ((items.length === 5) ? 'repeat(5,1fr)' : '');
     show($('action-sheet'));
+  }
+  // 详细信息弹窗
+  function showFileDetail(item) {
+    var size = item.Size || item.size || 0;
+    var t = item.UpdateTime || item.ModTime || item.Time || '';
+    var html = '<div style="padding:8px 0;line-height:2;">'
+      + '<div><b>名称：</b>' + esc(item.FileName || item.name || '') + '</div>'
+      + '<div><b>类型：</b>' + (item.Type === 1 ? '文件夹' : '文件') + '</div>'
+      + '<div><b>大小：</b>' + fmtSize(size) + '</div>'
+      + '<div><b>修改时间：</b>' + (t || '—') + '</div>'
+      + '<div><b>文件ID：</b>' + (item.FileId || '—') + '</div>'
+      + '<div><b>收藏：</b>' + (item.Favorited === 1 ? '已收藏' : '未收藏') + '</div>'
+      + '</div>';
+    $('cf-title').textContent = '详细信息';
+    $('cf-message').innerHTML = html;
+    var btns = document.querySelector('#confirm-modal .modal-btns');
+    if (btns) btns.style.display = '';
+    show($('confirm-modal'));
+    state.confirmOk = null;
   }
   function closeSheet() { hide($('action-sheet')); }
 
@@ -3133,6 +3214,123 @@
     show($('update-modal'));
   };
   //启动后自动检查（每次进入软件时；受「我的-自动更新」开关控制）
+
+  // 离线下载：先解析资源，再提交
+  function doOfflineDownload() {
+    var url = ($('offline-url').value || '').trim();
+    if (!url) { toast('请输入链接'); return; }
+    var out = $('offline-result');
+    out.textContent = '正在解析...';
+    api('POST', 'https://api.123278.com/b/api/v2/offline_download/task/resolve',
+      JSON.stringify({ urls: url }), true, function (d) {
+        if (!d || (d.code !== 0 && d.Code !== 0)) {
+          out.textContent = '解析失败：' + JSON.stringify(d).slice(0, 300);
+          return;
+        }
+        var data = d.data || d.Data || {};
+        var list = data.list || data.List || [];
+        var first = list[0] || {};
+        if (first.err_code && first.err_code !== 0) {
+          out.textContent = '磁力链接解析失败（err_code=' + first.err_code + '），请确认磁力链接有效且 tracker 可达。\n原始返回：' + JSON.stringify(data).slice(0, 200);
+          return;
+        }
+        var rid = first.id || first.ID || first.resource_id || 0;
+        if (!rid) {
+          out.textContent = '解析返回：' + JSON.stringify(data).slice(0, 300);
+          return;
+        }
+        out.textContent = '已解析：' + (list[0] && list[0].name) + '（' + (list[0] && list[0].size) + ' 字节），正在提交...';
+        var selFiles = (list[0] && list[0].files && list[0].files.map(function (f) { return f.id || f.ID; })) || [];
+        api('POST', 'https://api.123278.com/b/api/v2/offline_download/task/submit',
+          JSON.stringify({ resource_list: [{ resource_id: rid, select_file_id: selFiles }] }), true, function (d2) {
+            if (d2 && (d2.code === 0 || d2.Code === 0)) {
+              out.textContent = '✅ 离线下载已提交，文件稍后出现在网盘根目录（如未出现请到官方App查看离线任务列表）';
+              $('offline-url').value = '';
+            } else {
+              out.textContent = '提交失败：' + ((d2 && d2.message) || JSON.stringify(d2).slice(0, 300));
+            }
+          });
+      });
+  }
+
+  // ---------- 屏幕常亮 ----------
+  // 传输进行中强制常亮；无传输时恢复用户偏好
+  function refreshTransferKeepWake() {
+    var active = !!(state.transfers && state.transfers.some(function (t) {
+      return t && (t.status === 'running' || t.status === 'pending' || t.status === 'waiting');
+    }));
+    state.transferKeepWake = active;
+  }
+
+  // ---------- 主题（跟随系统 / 浅色 / 深色） ----------
+  function systemDark() {
+    if (bridge && bridge.isSystemDark) {
+      try { return !!bridge.isSystemDark(); } catch (e) {}
+    }
+    try { return !!(window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches); } catch (e) { return false; }
+  }
+  function applyTheme() {
+    var mode = state.themeMode || 'auto';
+    var dark = mode === 'dark' || (mode === 'auto' && systemDark());
+    document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
+  }
+
+  // ---------- 下载目录 ----------
+  function renderDownloadDir() {
+    var el = $('mine-dir-val');
+    if (!el) return;
+    var d = '123云盘';
+    if (bridge && bridge.getDownloadSubDir) {
+      try { d = bridge.getDownloadSubDir() || d; } catch (e) {}
+    }
+    el.textContent = 'Download/' + d;
+  }
+  function onChangeDownloadDir() {
+    if (bridge && bridge.pickDownloadDir) {
+      try { bridge.pickDownloadDir(); } catch (e) {}
+    } else {
+      toast('当前环境不支持选择目录');
+    }
+  }
+  // NativeBridge 选定目录后回调
+  window.__onDownloadDirPicked = function (dir) {
+    if (dir) {
+      if (bridge && bridge.setDownloadSubDir) { try { bridge.setDownloadSubDir(dir); } catch (e) {} }
+      renderDownloadDir();
+      toast('下载目录已更新');
+    }
+  };
+
+  // ---------- 重名文件处理策略 ----------
+  function getDupStrategy() {
+    try { return localStorage.getItem('pan_dup') || 'rename'; } catch (e) { return 'rename'; }
+  }
+  function renderDupStrategy() {
+    var el = $('dup-val');
+    if (!el) return;
+    var s = getDupStrategy();
+    el.textContent = s === 'overwrite' ? '覆盖同名文件' : '保留两者（自动更名）';
+  }
+  function onChangeDupStrategy() {
+    var s = getDupStrategy() === 'overwrite' ? 'rename' : 'overwrite';
+    try { localStorage.setItem('pan_dup', s); } catch (e) {}
+    renderDupStrategy();
+  }
+
+  // ---------- 复制文本 ----------
+  function copyText(text) {
+    try {
+      var ta = document.createElement('textarea');
+      ta.value = text || '';
+      ta.style.position = 'fixed'; ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+      toast('已复制');
+    } catch (e) { toast('复制失败'); }
+  }
+
   function scheduleUpdateBoot() {
     setTimeout(function () { if (state.autoUpdate) checkAppUpdate(false); }, 1800);
   }
@@ -3142,15 +3340,24 @@
     renderAccountList();
     updateCacheSize();
     renderAutoUpdate();
+    renderDownloadDir();
+    renderDupStrategy();
     api('GET', API.userInfo, '', true, function (d) {
       if (d && (d.data || d.Data)) {
         var u = d.data || d.Data;
         // 兼容：部分响应的用户信息嵌套在 user 对象中
         if (u.user && typeof u.user === 'object') u = u.user;
+        // 缓存头像/昵称（2位置：state.profile），并重新渲染账号列表以刷新头像
+        var _nick = u.nickname || u.Nickname || u.nickName || '';
+        var _head = u.headImage || u.headImg || u.HeadImage || u.avatar || '';
+        if (_nick || _head) {
+          state.profile = { nickname: String(_nick || ''), headImage: String(_head || '') };
+          renderAccountList();
+        }
         // 123pan /b/api/user/info 真实字段：SpaceUsed（已用）、SpacePermanent（永久空间）、SpaceTemp（临时空间）
-        var used = numOf(u, 'SpaceUsed', 'UsedSize', 'usedSize', 'space_used', 'used');
-        var permanent = numOf(u, 'SpacePermanent', 'TotalSize', 'totalSize', 'space_total', 'total');
-        var temp = numOf(u, 'SpaceTemp', 'freeSize', 'FreeSize', 'space_temp', 'free');
+        var used = numOf(u, 'SpaceUsed', 'spaceUsed', 'UsedSize', 'usedSize', 'space_used', 'used');
+        var permanent = numOf(u, 'SpacePermanent', 'spacePermanent', 'TotalSize', 'totalSize', 'space_total', 'total');
+        var temp = numOf(u, 'SpaceTemp', 'spaceTemp', 'freeSize', 'FreeSize', 'space_temp', 'free');
         // 总额 = 永久空间 + 临时空间；备用取 used + free
         var total = (permanent > 0 || temp > 0) ? (permanent + temp) : 0;
         if (!(total > 0)) total = used + (temp > 0 ? temp : 0);
@@ -3299,14 +3506,30 @@
     for (var i = 0; i < list.length; i++) { if (list[i].user === curName) { curAcct = list[i]; break; } }
     if (!curAcct) curAcct = list[0];
     var cLetter = (curAcct.user.charAt(0) || '用').toUpperCase();
+    // 头像：优先用缓存的 headImage（相对路径自动补 https://），加载失败回退首字母
+    var _prof = state.profile || {};
+    var _nick = _prof.nickname || '';
+    var _head = _prof.headImage || '';
+    if (_head && !/^https?:\/\//i.test(_head) && !/^data:/i.test(_head)) {
+      _head = (_head.charAt(0) === '/') ? ('https://www.123pan.com' + _head) : ('https://' + _head);
+    }
+    var _avatarHtml = _head
+      ? ('<img class="acct-av-img" alt="" src="' + esc(_head) + '" onerror="this.style.display=\'none\';this.parentNode.classList.add(\'av-fallback\')">')
+      : '';
+    var _userLine = _nick ? esc(_nick) : esc(curAcct.user);
+    var _acctId = curAcct.passport || curAcct.mail || curAcct.user || '';
+    if (_acctId === curAcct.user && _nick) _acctId = curAcct.user;
+    var _metaHtml = (_acctId && _acctId !== _userLine)
+      ? ('<div class="acct-meta">' + esc(_acctId) + '</div>')
+      : '<div class="acct-meta"><span class="mi-icon" data-icon="check"></span>当前账号</div>';
 
     var html = '';
-    // ---- 折叠区：当前账号 + 展开按钮 ----
+    // ---- 折叠区：头像 + 昵称（账号作为次级小字）+ 展开按钮 ----
     html += '<div class="acct-summary" data-summary="1">'
-      + '<div class="acct-avatar sm">' + esc(cLetter) + '</div>'
+      + '<div class="acct-avatar sm">' + _avatarHtml + '<span class="acct-av-letter">' + esc(cLetter) + '</span></div>'
       + '<div class="acct-info">'
-      + '<div class="acct-user">' + esc(curAcct.user) + '</div>'
-      + '<div class="acct-meta"><span class="mi-icon" data-icon="check"></span>当前账号</div>'
+      + '<div class="acct-user">' + _userLine + '</div>'
+      + _metaHtml
       + '</div>'
       + '<span class="acct-toggle" data-toggle="1">'
       + '<span class="mi-icon" data-icon="chevron-down"></span>'
@@ -3462,8 +3685,9 @@
     if (state.selectMode) { exitSelectMode(); return true; }
     // 再回退文件目录
     if (state.view === 'files' && state.currentDir !== 0) {
-      var last = state.breadcrumb.pop() || { id: 0 };
-      state.currentDir = last.id;
+      state.breadcrumb.pop();
+      var prevDir = state.breadcrumb[state.breadcrumb.length - 1];
+      state.currentDir = prevDir ? prevDir.id : 0;
       loadList();
       return true;
     }
@@ -3489,7 +3713,8 @@
     // 传输页子页签切换（下载 / 上传）
     document.querySelectorAll('#view-transfers .ttab').forEach(function (b) {
       b.addEventListener('click', function () {
-        state.transferTab = b.getAttribute('data-ttab') === 'upload' ? 'upload' : 'download';
+        var tv = b.getAttribute('data-ttab');
+        state.transferTab = (tv === 'upload' || tv === 'offline') ? tv : 'download';
         try { localStorage.setItem('pan_ttab', state.transferTab); } catch (e) {}
         renderTransfers();
       });
@@ -3504,6 +3729,11 @@
     //自动更新开关与下载按钮绑定
     $('mine-autoupdate').addEventListener('click', onToggleAutoUpdate);
     $('upd-go').addEventListener('click', onUpdGo);
+    // 偏好设置：屏幕常亮 / 下载目录 / 主题
+    var dirItem = $('mine-download-dir');
+    if (dirItem) dirItem.addEventListener('click', onChangeDownloadDir);
+    var dupItem = $('mine-dup');
+    if (dupItem) dupItem.addEventListener('click', onChangeDupStrategy);
     // 新建文件夹
     $('tool-newfolder').addEventListener('click', function () {
       $('newfolder-input').value = '';
@@ -3660,6 +3890,18 @@
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', function () { init(); scheduleUpdateBoot(); });
   } else {
+
+  // 启动时应用偏好
+  applyTheme();
+  refreshTransferKeepWake();
+  setInterval(refreshTransferKeepWake, 2000);
+  try {
+    if (window.matchMedia) {
+      window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', function () {
+        if (state.themeMode === 'auto') applyTheme();
+      });
+    }
+  } catch (e) {}
     init();
     scheduleUpdateBoot();
   }

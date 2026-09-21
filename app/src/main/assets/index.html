@@ -65,6 +65,7 @@
         <div class="transfer-tabs">
           <button class="ttab" id="ttab-download" data-ttab="download">下载</button>
           <button class="ttab" id="ttab-upload" data-ttab="upload">上传</button>
+          <button class="ttab" id="ttab-offline" data-ttab="offline">离线下载</button>
         </div>
         <div id="transfer-list"></div>
         <div class="panel-empty" id="transfer-empty">
@@ -96,12 +97,11 @@
           <span class="mine-label"><span class="mi-icon" data-icon="user-plus"></span>添加账号</span><span class="mine-val mine-arrow">›</span>
         </div>
 
-        <div class="mine-section-title">分享</div>
         <div class="mine-item mine-item-btn" id="mine-shares"><span class="mine-label"><span class="mi-icon" data-icon="share"></span>我的分享</span><span class="mine-arrow">›</span></div>
         <div class="mine-item mine-item-btn" id="mine-receive"><span class="mine-label"><span class="mi-icon" data-icon="link"></span>接收分享</span><span class="mine-arrow">›</span></div>
 
-        <div class="mine-section-title">通用</div>
         <div class="mine-item" id="mine-quota"><span class="mine-label"><span class="mi-icon" data-icon="hdd"></span>存储空间</span><span class="mine-val" id="mine-quota-val">-</span></div>
+        <div class="mine-item mine-item-btn" id="mine-download-dir"><span class="mine-label"><span class="mi-icon" data-icon="folder"></span>下载目录</span><span class="mine-val" id="mine-dir-val">Download/123云盘</span><span class="mine-arrow">›</span></div>
         <div class="mine-item mine-item-btn" id="mine-clear-cache"><span class="mine-label"><span class="mi-icon" data-icon="broom"></span>清除缓存</span><span class="mine-val" id="mine-cache-size">0 B</span><span class="mine-arrow">›</span></div>
         <div class="mine-item mine-item-btn" id="mine-autoupdate"><span class="mine-label"><span class="mi-icon" data-icon="refresh"></span>自动更新</span><span class="ui-switch" id="upd-switch"></span></div>
 
@@ -214,7 +214,7 @@
   </div>
 </div>
 
-<!-- 账号列表弹层（覆盖式底部 sheet，不占用"我的"页布局高度；只列其他账号+末尾添加，不重复当前账号） -->
+<!-- 账号列表弹层（切换账号用，覆盖式底部 sheet，不占用"我的"页布局高度；只列其他账号+末尾添加，不重复当前账号） -->
 <div id="account-sheet" class="sheet hidden">
   <div class="sheet-mask" data-close></div>
   <div class="sheet-panel">
@@ -233,7 +233,6 @@
     <div class="sheet-item cancel" data-close>取消</div>
   </div>
 </div>
-
 <!-- 我的分享页 -->
 <div id="page-shares" class="page-cover hidden">
   <div class="pc-head">
