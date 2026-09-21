@@ -1752,7 +1752,6 @@
         { icon: 'share', label: '分享', cls: '', fn: function () { closeSheet(); doShare(item); } },
         { icon: 'rename', label: '重命名', cls: '', fn: function () { closeSheet(); onAction('rename', item); } },
         { icon: 'trash', label: '删除', cls: 'warn', fn: function () { closeSheet(); onAction('delete', item); } },
-        { icon: 'detail', label: '详细信息', cls: '', fn: function () { closeSheet(); showFileDetail(item); } },
       ];
     } else {
       items = [
@@ -1761,7 +1760,6 @@
         { icon: 'share', label: '分享', cls: '', fn: function () { closeSheet(); doShare(item); } },
         { icon: 'rename', label: '重命名', cls: '', fn: function () { closeSheet(); onAction('rename', item); } },
         { icon: 'trash', label: '删除', cls: 'warn', fn: function () { closeSheet(); onAction('delete', item); } },
-        { icon: 'detail', label: '详细信息', cls: '', fn: function () { closeSheet(); showFileDetail(item); } },
       ];
     }
     items.forEach(function (it) {
