@@ -320,24 +320,46 @@ public class MainActivity extends Activity {
         if (requestCode == DOWNLOAD_DIR_PICK_REQUEST) {
             if (resultCode != RESULT_OK || data == null || data.getData() == null) return;
             Uri treeUri = data.getData();
-            String dirName = "123云盘";
+            // 「选哪儿就是哪儿」：完整保留用户所选目录，支持任意层级与 Download 根目录。
+            //   primary:Download          -> ROOT_MARK（Download 根）
+            //   primary:Download/我的     -> "我的"
+            //   primary:我的/Videos       -> "我的/Videos"
+            //   primary:Movies            -> "Movies"
+            //   primary:                  -> 回退默认
+            String relPath = DEFAULT_DOWNLOAD_SUBDIR;
             try {
-                String last = treeUri.getLastPathSegment();
-                if (last != null) {
-                    int colon = last.indexOf(':');
-                    if (colon >= 0) last = last.substring(colon + 1);
-                    int slash = last.lastIndexOf('/');
-                    if (slash >= 0) last = last.substring(slash + 1);
-                    if (last != null && !last.isEmpty()) dirName = last;
+                String seg = treeUri.getLastPathSegment(); // 形如 "primary:我的/Videos"
+                if (seg != null) {
+                    int colon = seg.indexOf(':');
+                    if (colon >= 0) seg = seg.substring(colon + 1);
+                    seg = seg.trim();
+                    while (seg.startsWith("/")) seg = seg.substring(1);
+                    while (seg.endsWith("/")) seg = seg.substring(0, seg.length() - 1);
+                    if (seg.isEmpty()) {
+                        // 选了存储根（无任何子目录）→ 回退默认
+                        relPath = DEFAULT_DOWNLOAD_SUBDIR;
+                    } else if (seg.equalsIgnoreCase(Environment.DIRECTORY_DOWNLOADS)) {
+                        // 恰好是 Download 根目录 → 显式标记，落盘到 Download/
+                        relPath = ROOT_MARK;
+                    } else if (seg.length() > 9
+                            && seg.regionMatches(true, 0, "Download/", 0, 9)) {
+                        // 以 Download/ 开头 → 剥掉前缀（downloadRelPath 会再拼 Download/）
+                        relPath = seg.substring(9);
+                    } else {
+                        // 其它任意目录（含非 Download 目录，如 Movies）→ 尊重用户选择
+                        relPath = seg;
+                    }
+                    if (relPath == null || relPath.trim().isEmpty()) relPath = DEFAULT_DOWNLOAD_SUBDIR;
                 }
             } catch (Exception ignore) {}
-            final String finalName = dirName;
+            final String finalName = relPath;
             setDownloadSubDir(finalName);
             handler.post(new Runnable() {
                 @Override public void run() {
-                    toast("/Download/" + finalName);
+                    toast("下载目录：" + downloadRelPath());
                     if (webView != null) {
-                        String js = "window.__onDownloadDirPicked&&window.__onDownloadDirPicked('" + finalName + "');";
+                        String safe = getDownloadSubDirDisplay().replace("\\", "\\\\").replace("'", "\\'");
+                        String js = "window.__onDownloadDirPicked&&window.__onDownloadDirPicked('" + safe + "');";
                         webView.evaluateJavascript(js, null);
                     }
                 }
@@ -534,11 +556,12 @@ public class MainActivity extends Activity {
             req.setTitle(fname);
             req.setDescription("123云盘下载");
             req.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
-            req.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, fname);
+            // 自定义下载目录：Download/<用户选择的子目录>
+            req.setDestinationInExternalPublicDir(downloadRelPath(), fname);
             DownloadManager dm = (DownloadManager) getSystemService(Context.DOWNLOAD_SERVICE);
             long id = dm.enqueue(req);
             Log.d("PAN", "download enqueued: " + fname + " id=" + id);
-            toast("已加入下载任务：Download/" + fname);
+            toast("已加入下载任务：" + downloadRelPath() + "/" + fname);
             return id;
         } catch (Exception e) {
             Log.e("PAN", "downloadViaManager fail: " + url + " -> " + e, e);
@@ -736,11 +759,12 @@ public class MainActivity extends Activity {
                     ? "application/vnd.android.package-archive"
                     : "application/octet-stream";
                 cv.put(android.provider.MediaStore.MediaColumns.MIME_TYPE, mime);
-                cv.put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS);
+                // 自定义下载目录：使用 Download/<用户选择的子目录>（默认 Download/123云盘）
+                cv.put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH, act.downloadRelPath());
                 cv.put(android.provider.MediaStore.MediaColumns.IS_PENDING, 1);
                 android.net.Uri itemUri = act.getContentResolver().insert(
                     android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, cv);
-                logDl("task#" + t.id + " MediaStore insert uri=" + (itemUri != null ? itemUri.toString() : "NULL"));
+                logDl("task#" + t.id + " MediaStore insert uri=" + (itemUri != null ? itemUri.toString() : "NULL") + " rel=" + act.downloadRelPath());
                 if (itemUri == null) { t.status = 16; Log.e("PAN", "stream dl: MediaStore insert fail"); return; }
                 t.uri = itemUri;
             }
@@ -1038,7 +1062,8 @@ public class MainActivity extends Activity {
             String mime = t.filename != null && t.filename.toLowerCase().endsWith(".apk")
                 ? "application/vnd.android.package-archive" : "application/octet-stream";
             cv.put(android.provider.MediaStore.MediaColumns.MIME_TYPE, mime);
-            cv.put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS);
+            // 自定义下载目录：使用 Download/<用户选择的子目录>（更新包也遵循此设置）
+            cv.put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH, act.downloadRelPath());
             cv.put(android.provider.MediaStore.MediaColumns.IS_PENDING, 1);
             itemUri = act.getContentResolver().insert(
                 android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, cv);
@@ -1452,9 +1477,15 @@ public class MainActivity extends Activity {
             }
             if (f == null) {
                 try {
+                    // 优先查找自定义子目录 Download/<subDir>，再回退到 Download 根目录
                     File cd = new File(Environment.getExternalStoragePublicDirectory(
-                        Environment.DIRECTORY_DOWNLOADS).getAbsolutePath(), fname);
+                        downloadRelPath()).getAbsolutePath(), fname);
                     if (cd.exists() && cd.length() > 0) f = cd;
+                    if (f == null || !f.exists()) {
+                        File cd0 = new File(Environment.getExternalStoragePublicDirectory(
+                            Environment.DIRECTORY_DOWNLOADS).getAbsolutePath(), fname);
+                        if (cd0.exists() && cd0.length() > 0) f = cd0;
+                    }
                 } catch (Exception ignore) {}
             }
             // 2) App 私有外部下载目录
@@ -2363,18 +2394,53 @@ public class MainActivity extends Activity {
         }});
     }
     // ---- 自定义下载目录 ----
+    // 约定：本字段保存「相对 Download/ 的完整相对路径」；特殊值 ROOT_MARK 表示 Download 根目录
+    private static final String DEFAULT_DOWNLOAD_SUBDIR = "123云盘";
+    private static final String ROOT_MARK = ".";   // 内部标记：Download 根目录
     public String getDownloadSubDir() {
-        return downloadSubDir == null ? "123云盘" : downloadSubDir;
+        if (downloadSubDir == null) return DEFAULT_DOWNLOAD_SUBDIR;
+        String s = downloadSubDir.trim();
+        return s.isEmpty() ? DEFAULT_DOWNLOAD_SUBDIR : downloadSubDir;
     }
     public void setDownloadSubDir(String dir) {
-        if (dir == null) dir = "123云盘";
+        if (dir == null) dir = DEFAULT_DOWNLOAD_SUBDIR;
         dir = dir.trim();
-        if (dir.isEmpty()) dir = "123云盘";
+        if (dir.isEmpty()) dir = DEFAULT_DOWNLOAD_SUBDIR;
         downloadSubDir = dir;
         if (prefs != null) prefs.edit().putString("download_sub_dir", dir).apply();
     }
+    /** 供 JS 显示用：把内部标记翻译成人类可读的目录名 */
+    public String getDownloadSubDirDisplay() {
+        String d = getDownloadSubDir();
+        if (ROOT_MARK.equals(d)) return "Download";   // 根目录
+        return d;
+    }
     public String downloadRelPath() {
-        return Environment.DIRECTORY_DOWNLOADS + "/" + getDownloadSubDir();
+        // 存储模型：downloadSubDir 保存的是「相对 Download/ 的完整相对路径」，语义如下：
+        //   null / 空          -> "123云盘"（默认隔离目录）
+        //   "123云盘"          -> Download/123云盘
+        //   "我的/Videos"      -> Download/我的/Videos（多级）
+        //   "/" 或 "."（根）  -> Download（直接落在 Download 根目录，用户显式选择"选哪儿就是哪儿"）
+        //   以 "Download/" 开头 -> 原样去重后使用
+        String raw = getDownloadSubDir();
+        if (raw == null) raw = DEFAULT_DOWNLOAD_SUBDIR;
+        raw = raw.trim();
+        while (raw.startsWith("/")) raw = raw.substring(1);
+        while (raw.endsWith("/")) raw = raw.substring(0, raw.length() - 1);
+        if (raw.isEmpty() || ".".equals(raw)) {
+            // 用户选择 Download 根目录
+            return Environment.DIRECTORY_DOWNLOADS;
+        }
+        if (raw.equalsIgnoreCase(Environment.DIRECTORY_DOWNLOADS)) {
+            return Environment.DIRECTORY_DOWNLOADS;
+        }
+        // 若已带 Download/ 前缀则去重，否则统一补上
+        String prefix = Environment.DIRECTORY_DOWNLOADS + "/";
+        if (raw.length() > prefix.length() && raw.regionMatches(true, 0, prefix, 0, prefix.length())) {
+            raw = raw.substring(prefix.length());
+        }
+        if (raw.isEmpty()) return Environment.DIRECTORY_DOWNLOADS;
+        return Environment.DIRECTORY_DOWNLOADS + "/" + raw;
     }
     // 删除已下载文件（文件系统 + MediaStore 记录）
     public void deleteDownloadedFile(String fileName) {
