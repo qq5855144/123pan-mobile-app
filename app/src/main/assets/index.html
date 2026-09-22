@@ -73,6 +73,16 @@
           <p id="transfer-empty-title">暂无传输任务</p>
           <p class="panel-sub" id="transfer-empty-sub">下载文件保存在系统下载目录，上传任务在此实时显示</p>
         </div>
+        <!-- 传输页底部工具栏：全选 / 删除（删除时弹窗确认删除类型） -->
+        <div id="transfer-toolbar" class="hidden">
+          <div class="tool-btn" id="tt-selectall" data-tool="selectall">
+            <span class="tool-icon" data-icon="check"></span><span id="tt-selectall-label">全选</span>
+          </div>
+          <div class="tool-sep"></div>
+          <div class="tool-btn" id="tt-delete" data-tool="delete">
+            <span class="tool-icon" data-icon="trash"></span><span id="tt-delete-label">删除</span>
+          </div>
+        </div>
       </section>
 
       <!-- 回收站视图 -->
