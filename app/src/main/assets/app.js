@@ -776,20 +776,39 @@
     box.innerHTML = html;
     // 注入动态生成的类型徽章图标（修复传输列表图标不显示）
     injectIcons(box);
-    // 传输页勾选框：点击切换该项选中态（仅在勾选模式下可用）
+    // 传输页勾选框：点击直接切换该项选中态（无需先点「全选」）
     box.querySelectorAll('.transfer-chk').forEach(function (chk) {
       chk.addEventListener('click', function (e) {
         e.stopPropagation();
-        if (!state.transferSelMode) return;
         var k = chk.getAttribute('data-k');
         if (state.transferSel[k]) delete state.transferSel[k];
         else state.transferSel[k] = true;
+        // 只要有勾选就进入选中模式（用于高亮/交互）；全部取消后自动退出
+        state.transferSelMode = ttSelCount() > 0;
         renderTransfers();
         ttRefreshBar();
       });
     });
     // 同步传输页底部工具栏（全选/删除）按钮文案
     ttRefreshBar();
+    // 点击整行任一位置也可直接勾选/取消（排除操作按钮区域）
+    box.querySelectorAll('.transfer-item').forEach(function (item) {
+      item.addEventListener('click', function (e) {
+        // 点击在操作按钮上时不触发行选择
+        var t = e.target;
+        if (t && t.closest && (t.closest('.transfer-open') || t.closest('.transfer-act') ||
+            t.closest('.transfer-del') || t.closest('.up-del') || t.closest('.transfer-chk'))) return;
+        var chk = item.querySelector('.transfer-chk');
+        if (!chk) return;
+        var k = chk.getAttribute('data-k');
+        if (!k) return;
+        if (state.transferSel[k]) delete state.transferSel[k];
+        else state.transferSel[k] = true;
+        state.transferSelMode = ttSelCount() > 0;
+        renderTransfers();
+        ttRefreshBar();
+      });
+    });
     // 打开按钮：apk 走安装程序，其他走系统推荐打开方式
     box.querySelectorAll('.transfer-open').forEach(function (btn) {
       btn.addEventListener('click', function () {
