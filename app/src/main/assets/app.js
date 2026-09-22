@@ -3339,6 +3339,98 @@
     toast(state.autoUpdate ? '自动更新已开启' : '自动更新已关闭');
     if (state.autoUpdate) checkAppUpdate(true);
   }
+  // ================= 更新包下载线路测速（仅用于更新包，不影响其它下载） =================
+  // 下载更新包前，并发测试「GitHub 直连 + 下列镜像线路」的实际下载速度，自动选用最快的一条。
+  // 结果缓存 30 分钟，避免每次弹更新都重新测速。
+  var UPD_PROXIES = [
+    '',                                // 直连（GitHub 原始地址）
+    'https://ghproxy.net/',            // 镜像线路 1
+    'https://gh-proxy.com/',           // 镜像线路 2
+    'https://gh-proxy.org/'            // 镜像线路 3
+  ];
+  var UPD_SPEED_CACHE_KEY = 'pan_upd_bestline'; // { u: 最快线路原始url, p: 代理前缀, t: 时间戳 }
+  var UPD_SPEED_TTL = 30 * 60 * 1000;           // 测速结果缓存 30 分钟
+  var UPD_SPEED_TIMEOUT = 6000;                 // 单线路测速超时 6s
+  var UPD_SPEED_PROBE = 262144;                 // 每个线路探测前 256KB
+  // 为更新包 URL 拼接代理前缀；直连前缀为空则原样返回
+  function updApplyProxy(u, prefix) {
+    if (!prefix) return u;
+    if (u.indexOf(prefix) === 0) return u; // 已带该前缀
+    return prefix + u;
+  }
+  // 读取 30 分钟内的有效缓存（仅当原始 url 一致时可用）
+  function updGetCachedLine(u) {
+    try {
+      var c = JSON.parse(localStorage.getItem(UPD_SPEED_CACHE_KEY) || 'null');
+      if (!c || !c.u || c.u !== u) return null;
+      if (Date.now() - Number(c.t || 0) > UPD_SPEED_TTL) return null;
+      return c;
+    } catch (e) { return null; }
+  }
+  function updSetCachedLine(u, prefix) {
+    try { localStorage.setItem(UPD_SPEED_CACHE_KEY, JSON.stringify({ u: u, p: prefix, t: Date.now() })); } catch (e) {}
+  }
+  // 单线路测速：拉取前 N 字节，返回「字节/毫秒」速度（越大越快）；失败/超时返回 -1
+  function updProbeOne(u, prefix, done) {
+    var url = updApplyProxy(u, prefix);
+    var t0 = Date.now();
+    var settled = false;
+    var xhr;
+    function finish(speed) {
+      if (settled) return;
+      settled = true;
+      try { xhr && xhr.abort(); } catch (e) {}
+      done(prefix || '', speed);
+    }
+    try {
+      xhr = new XMLHttpRequest();
+      xhr.open('GET', url, true);
+      try { xhr.setRequestHeader('Range', 'bytes=0-' + (UPD_SPEED_PROBE - 1)); } catch (e) {}
+      xhr.responseType = 'arraybuffer';
+      var timer = setTimeout(function () { finish(-1); }, UPD_SPEED_TIMEOUT);
+      xhr.onprogress = function (ev) {
+        // 拿到足够字节即可判定速度，无需等下载完
+        var got = ev && ev.loaded ? ev.loaded : 0;
+        if (got >= UPD_SPEED_PROBE) {
+          clearTimeout(timer);
+          var dt = Math.max(1, Date.now() - t0);
+          finish(got / dt);
+        }
+      };
+      xhr.onload = function () {
+        clearTimeout(timer);
+        var got = (xhr.response && xhr.response.byteLength) || UPD_SPEED_PROBE;
+        var dt = Math.max(1, Date.now() - t0);
+        var ok = xhr.status >= 200 && xhr.status < 400;
+        finish(ok ? got / dt : -1);
+      };
+      xhr.onerror = function () { clearTimeout(timer); finish(-1); };
+      xhr.onabort = function () { clearTimeout(timer); if (!settled) finish(-1); };
+      xhr.send();
+    } catch (e) { finish(-1); }
+  }
+  // 并发测速选最快线路；cb(prefix) 回调选中的代理前缀（'' 表示直连），失败回退直连
+  function updPickFastestLine(u, cb) {
+    var cached = updGetCachedLine(u);
+    if (cached) { cb(cached.p || ''); return; }
+    var pending = UPD_PROXIES.length;
+    var best = { p: '', speed: -1 };
+    var settled = false;
+    UPD_PROXIES.forEach(function (prefix) {
+      updProbeOne(u, prefix, function (p, speed) {
+        if (!settled) {
+          if (speed > best.speed) { best = { p: p, speed: speed }; }
+          pending--;
+          if (pending <= 0) {
+            settled = true;
+            var chosen = best.speed > 0 ? best.p : '';
+            if (best.speed > 0) updSetCachedLine(u, chosen);
+            cb(chosen);
+          }
+        }
+      });
+    });
+  }
   //更新弹窗：点下载按钮
   function onUpdGo() {
     hide($('update-modal'));
@@ -3346,24 +3438,32 @@
     state.updateInfo = null;
     if (!info.url) { toast('未找到安装包下载地址，可前往 Releases 页手动下载'); return; }
     var fname = '123pan-mobile-' + (info.version || 'new') + '.apk';
-    // 更新包下载改用自研下载器（原生侧自动做「直连→镜像回退→自动重试→字节校验」），
-    // 不再走系统 DownloadManager 单一直连（CN 网络下易失败且失败后无恢复手段）。
-    var useStream = !!(bridge && bridge.downloadStream);
-    try {
-      var id = useStream ? Number(bridge.downloadStream(info.url, fname, Number(info.size) || 0))
-        : (bridge && bridge.download ? bridge.download(info.url, fname) : 0);
-      if (Number(id) > 0) {
-        //注册到传输列表：轮询同步进度与完成状态，完成后点「打开」直接安装
-        addTransfer({ id: Number(id), name: fname, size: Number(info.size) || 0, total: Number(info.size) || 0, status: 'downloading', stream: useStream, link: info.url });
-        startProgressPolling();
-        if (state.view === 'transfers') renderTransfers();
-        toast('已加入下载任务，完成后可在传输页打开安装');
-      } else {
-        toast('下载启动失败，请稍后重试');
+    // 更新包下载：先并发测速「直连 + 镜像线路」，自动选最快的一条（结果缓存 30 分钟）。
+    // 选中的最终 URL 交给原生自研下载器（原生侧仍会做「回退→重试→字节校验」）。
+    // 注意：本测速逻辑仅服务于更新包，不影响文件下载/上传/离线下载等其它下载。
+    var doStart = function (finalUrl) {
+      var useStream = !!(bridge && bridge.downloadStream);
+      try {
+        var id = useStream ? Number(bridge.downloadStream(finalUrl, fname, Number(info.size) || 0))
+          : (bridge && bridge.download ? bridge.download(finalUrl, fname) : 0);
+        if (Number(id) > 0) {
+          //注册到传输列表：轮询同步进度与完成状态，完成后点「打开」直接安装
+          addTransfer({ id: Number(id), name: fname, size: Number(info.size) || 0, total: Number(info.size) || 0, status: 'downloading', stream: useStream, link: finalUrl });
+          startProgressPolling();
+          if (state.view === 'transfers') renderTransfers();
+          toast('已加入下载任务，完成后可在传输页打开安装');
+        } else {
+          toast('下载启动失败，请稍后重试');
+        }
+      } catch (e) {
+        toast('下载失败：' + (e && e.message ? e.message : e));
       }
-    } catch (e) {
-      toast('下载失败：' + (e && e.message ? e.message : e));
-    }
+    };
+    var cachedLine = updGetCachedLine(info.url);
+    toast(cachedLine ? '正在使用已选线路下载更新包...' : '正在测速选择最快线路...');
+    updPickFastestLine(info.url, function (prefix) {
+      doStart(updApplyProxy(info.url, prefix));
+    });
   }
   //原生回调：GitHub 最新 Release 信息
   window.__onUpdateCheck = function (info) {
