@@ -112,6 +112,8 @@
     autoUpdate: (function () { try { return localStorage.getItem('pan_autoupdate') !== '0'; } catch (e) { return true; } })(), //自动更新开关（默认开启）
     themeMode: (function () { try { return localStorage.getItem('pan_theme') || 'auto'; } catch (e) { return 'auto'; } })(), // 主题：auto/light/dark
     transferKeepWake: false, // 传输进行中强制保持屏幕常亮
+    transferSelMode: false,  // 传输页是否处于勾选（批量删除）模式
+    transferSel: {},         // 传输页已勾选项：key = 'd:<idx>' 或 'u:<idx>' -> true
     updateInfo: null, //待下载的新版本信息 {version, url}
     progTimer: null,          // 下载进度轮询定时器
     searching: false,         // 是否处于全局搜索态
@@ -317,6 +319,8 @@
     if (v === 'recycle') loadRecycle();
     if (v === 'transfers') { renderTransfers(); startProgressPolling(); }
     else { stopProgressPolling(); }
+    // 传输页底部工具栏仅在该视图显示（离线下载子页签下隐藏）
+    ttUpdateToolbarVisible();
     if (v === 'files' && !$('file-list').dataset.loaded) loadList();
   }
 
@@ -530,6 +534,147 @@
       }
     } catch (e) { /* 忽略轮询解析错误 */ }
   }
+// ---------- 传输页批量删除（全选 / 删除） ----------
+  // 当前子页签对应的任务数组（下载 -> state.transfers；上传 -> state.upQueue）
+  function ttCurrentList() {
+    return state.transferTab === 'upload' ? (state.upQueue || []) : (state.transfers || []);
+  }
+  // 当前子页签下所有可选项的 key 列表
+  function ttAllKeys() {
+    var list = ttCurrentList();
+    var pre = state.transferTab === 'upload' ? 'u:' : 'd:';
+    var keys = [];
+    for (var i = 0; i < list.length; i++) keys.push(pre + i);
+    return keys;
+  }
+  // 已勾选数量
+  function ttSelCount() {
+    var n = 0;
+    for (var k in state.transferSel) { if (state.transferSel[k]) n++; }
+    return n;
+  }
+  // 刷新底部工具栏按钮文案（全选 / 取消全选）
+  function ttRefreshBar() {
+    var lb = $('tt-selectall-label');
+    var keys = ttAllKeys();
+    var allSel = keys.length > 0;
+    for (var i = 0; i < keys.length; i++) { if (!state.transferSel[keys[i]]) { allSel = false; break; } }
+    if (lb) lb.textContent = allSel ? '取消全选' : '全选';
+    var dl = $('tt-delete-label');
+    if (dl) {
+      var n = ttSelCount();
+      dl.textContent = n > 0 ? ('删除(' + n + ')') : '删除';
+    }
+    // 无任何任务时隐藏删除高亮（按钮仍在，点击会提示）
+  }
+  // 根据当前视图/子页签显示或隐藏传输页底部工具栏
+  function ttUpdateToolbarVisible() {
+    var bar = $('transfer-toolbar');
+    if (!bar) return;
+    var showBar = (state.view === 'transfers') && (state.transferTab !== 'offline');
+    bar.classList.toggle('hidden', !showBar);
+    if (showBar) ttRefreshBar();
+  }
+  // 全选 / 取消全选（当前子页签）
+  function ttToggleSelectAll() {
+    var keys = ttAllKeys();
+    var allSel = keys.length > 0;
+    for (var i = 0; i < keys.length; i++) { if (!state.transferSel[keys[i]]) { allSel = false; break; } }
+    state.transferSelMode = true;
+    if (allSel) {
+      for (var j = 0; j < keys.length; j++) delete state.transferSel[keys[j]];
+    } else {
+      for (var k = 0; k < keys.length; k++) state.transferSel[keys[k]] = true;
+    }
+    renderTransfers();
+    ttRefreshBar();
+  }
+  // 退出勾选模式并清空选择
+  function ttExitSelMode() {
+    state.transferSelMode = false;
+    state.transferSel = {};
+    renderTransfers();
+    ttRefreshBar();
+  }
+  // 删除：按勾选批量删除，弹窗确认删除类型（仅删除记录 / 记录与文件同时删除）
+  function ttDelete() {
+    var keys = [];
+    for (var k in state.transferSel) { if (state.transferSel[k]) keys.push(k); }
+    if (!keys.length) { toast('请先点「全选」或逐项勾选要删除的任务'); return; }
+    var isUpload = state.transferTab === 'upload';
+    // 下载任务：判断是否有可删文件的项
+    var hasFile = false;
+    if (!isUpload) {
+      for (var i = 0; i < keys.length; i++) {
+        var idx = Number(keys[i].split(':')[1]);
+        var t = state.transfers && state.transfers[idx];
+        if (t && ttCanDelFile(t)) { hasFile = true; break; }
+      }
+    }
+    var delRecords = function (alsoFile) {
+      var list = isUpload ? state.upQueue : state.transfers;
+      // 按索引倒序删除，避免 splice 影响后续索引
+      var idxs = [];
+      for (var m = 0; m < keys.length; m++) idxs.push(Number(keys[m].split(':')[1]));
+      idxs.sort(function (a, b) { return b - a; });
+      for (var n = 0; n < idxs.length; n++) {
+        var id = idxs[n];
+        var it = list && list[id];
+        if (!it) continue;
+        if (!isUpload && alsoFile && ttCanDelFile(it)) {
+          try { bridge.deleteDownloadedFile(it.name); } catch (e) {}
+        }
+        if (!isUpload && it.stream && Number(it.id) >= 900000000 && bridge && bridge.deleteDownloadTask) {
+          try { bridge.deleteDownloadTask(Number(it.id)); } catch (e2) {}
+        }
+        if (isUpload) {
+          // 上传任务：若正在进行，先取消
+          if ((it.status === 'waiting' || it.status === 'uploading') && bridge && bridge.cancelUpload && Number(it.id) >= 0) {
+            try { bridge.cancelUpload(Number(it.id)); } catch (e3) {}
+          }
+        }
+        list.splice(id, 1);
+      }
+      if (isUpload) { if (typeof saveUpQueue === 'function') saveUpQueue(); }
+      else { saveTransfers(); }
+      state.transferSelMode = false;
+      state.transferSel = {};
+      renderTransfers();
+      ttRefreshBar();
+      toast('已删除 ' + keys.length + ' 项');
+    };
+    var items = [
+      { label: '仅删除记录', cls: '', fn: function () { closeSheet(); delRecords(false); } },
+      { label: hasFile ? '记录与文件同时删除' : '记录与文件同时删除（文件未就绪）',
+        cls: 'warn',
+        fn: function () {
+          if (!hasFile) { toast('所选任务中暂无已完成的文件，将仅删除记录'); closeSheet(); delRecords(false); return; }
+          closeSheet(); delRecords(true);
+        } }
+    ];
+    $('sheet-title').textContent = '删除 ' + keys.length + ' 项任务';
+    var grid = $('sheet-grid');
+    grid.innerHTML = '';
+    items.forEach(function (it) {
+      var el = document.createElement('div');
+      el.className = 'sheet-grid-item ' + it.cls;
+      var ic = document.createElement('div'); ic.className = 'sgi-icon';
+      ic.textContent = it.label;
+      el.appendChild(ic);
+      el.title = it.label;
+      el.addEventListener('click', it.fn);
+      grid.appendChild(el);
+    });
+    grid.style.gridTemplateColumns = 'repeat(2,1fr)';
+    show($('action-sheet'));
+  }
+  // 判断某下载任务的文件是否可删除（已完成/成功且有文件名）
+  function ttCanDelFile(t) {
+    if (!t) return false;
+    var isDone = (t.status === 'completed' || t.status === 'done' || Number(t.status) === 8 || Number(t.status) === 16);
+    return !!(isDone && t.name && bridge && bridge.deleteDownloadedFile);
+  }
+
   function renderTransfers() {
     var box = $('transfer-list');
     var empty = $('transfer-empty');
@@ -590,7 +735,8 @@
       } else if (ut.status === 'failed' || ut.status === 'cancelled') {
         ubtn = '<button class="transfer-act t-upretry" data-u="' + u + '">重试</button>';
       }
-      html += '<div class="transfer-item">'
+      html += '<div class="transfer-item' + (state.transferSelMode ? ' tt-sel-item' : '') + (state.transferSel['u:' + u] ? ' tt-sel' : '') + '">'
+        + '<div class="transfer-chk" data-k="u:' + u + '"></div>'
         + '<div class="transfer-ic ic-' + uicName + '" data-icon="' + uicName + '"></div>'
         + '<div class="transfer-info"><div class="transfer-name">' + esc(unm) + '</div>'
         + '<div class="transfer-sub">' + esc(usz) + ' · ' + esc(ulabel) + '</div></div>'
@@ -619,7 +765,8 @@
       else if (t.status === 'paused') mainBtn = '<button class="transfer-act t-resume" data-i="' + i + '">继续</button>';
       else if (t.status === 'failed') mainBtn = '<button class="transfer-act t-retry" data-i="' + i + '">重试</button>';
       else mainBtn = '<button class="transfer-open disabled" data-i="' + i + '">打开</button>';
-      html += '<div class="transfer-item">'
+      html += '<div class="transfer-item' + (state.transferSelMode ? ' tt-sel-item' : '') + (state.transferSel['d:' + i] ? ' tt-sel' : '') + '">'
+        + '<div class="transfer-chk" data-k="d:' + i + '"></div>'
         + icHtml
         + '<div class="transfer-info"><div class="transfer-name">' + esc(nm) + '</div>'
         + '<div class="transfer-sub">' + esc(sz) + ' · ' + esc(label) + '</div></div>'
@@ -629,6 +776,20 @@
     box.innerHTML = html;
     // 注入动态生成的类型徽章图标（修复传输列表图标不显示）
     injectIcons(box);
+    // 传输页勾选框：点击切换该项选中态（仅在勾选模式下可用）
+    box.querySelectorAll('.transfer-chk').forEach(function (chk) {
+      chk.addEventListener('click', function (e) {
+        e.stopPropagation();
+        if (!state.transferSelMode) return;
+        var k = chk.getAttribute('data-k');
+        if (state.transferSel[k]) delete state.transferSel[k];
+        else state.transferSel[k] = true;
+        renderTransfers();
+        ttRefreshBar();
+      });
+    });
+    // 同步传输页底部工具栏（全选/删除）按钮文案
+    ttRefreshBar();
     // 打开按钮：apk 走安装程序，其他走系统推荐打开方式
     box.querySelectorAll('.transfer-open').forEach(function (btn) {
       btn.addEventListener('click', function () {
@@ -3716,9 +3877,18 @@
         var tv = b.getAttribute('data-ttab');
         state.transferTab = (tv === 'upload' || tv === 'offline') ? tv : 'download';
         try { localStorage.setItem('pan_ttab', state.transferTab); } catch (e) {}
+        // 切换子页签时退出勾选模式，避免跨页签残留选择
+        state.transferSelMode = false;
+        state.transferSel = {};
         renderTransfers();
+        ttUpdateToolbarVisible();
       });
     });
+    // 传输页底部工具栏：全选 / 删除
+    var ttSelAll = $('tt-selectall');
+    if (ttSelAll) ttSelAll.addEventListener('click', ttToggleSelectAll);
+    var ttDel = $('tt-delete');
+    if (ttDel) ttDel.addEventListener('click', ttDelete);
     // 登录（统一官方登录页）
     var officialLoginBtn = $('official-login-btn');
     if (officialLoginBtn) officialLoginBtn.addEventListener('click', openOfficialLogin);
