@@ -118,8 +118,6 @@
     searchKeyword: '',        // 当前搜索关键词
     searchTotal: 0,           // 搜索命中总数
     selectMode: false,        // 是否处于多选（整理）模式
-    transferBatchMode: false, // 传输页是否处于批量管理模式
-    transferSelected: {},     // 批量模式下选中的传输项 key -> true
     selectedMap: {},          // 多选模式下选中的文件/文件夹 fileId -> item
     pickerState: null,        // 文件夹选择器状态 {dir, path:[{id,name}]}
     dupGroups: [],            // 查重结果：重复文件分组 [{key,label,items:[...]}]
@@ -532,157 +530,9 @@
       }
     } catch (e) { /* 忽略轮询解析错误 */ }
   }
-  // ---------- 传输项删除确认弹窗 & 批量删除 ----------
-  // 判断某项是否已真正落盘（可执行「同时删除文件」）：已完成/成功状态且有文件名
-  function transferFileDeletable(t) {
-    if (!t || !t.name) return false;
-    var st = t.status;
-    var done = (st === 'completed' || st === 'done' || Number(st) === 8);
-    return done && !!(bridge && bridge.deleteDownloadedFile);
-  }
-  // 从传输列表移除一条记录（若为原生任务则同时结束它）
-  function removeTransferAt(idx) {
-    var t = state.transfers && state.transfers[idx];
-    if (!t) return null;
-    if (t.stream && Number(t.id) >= 900000000 && bridge && bridge.deleteDownloadTask) {
-      try { bridge.deleteDownloadTask(Number(t.id)); } catch (e2) {}
-    }
-    state.transfers.splice(idx, 1);
-    return t;
-  }
-  // 弹出该传输项的删除确认浮层
-  function openTransferDeleteSheet(idx) {
-    var t = state.transfers && state.transfers[idx];
-    if (!t) return;
-    var canDelFile = transferFileDeletable(t);
-    var items = [
-      { label: '仅删除记录', cls: '', fn: function () {
-          closeSheet();
-          var rm = removeTransferAt(idx);
-          saveTransfers();
-          renderTransfers();
-          if (rm) toast('已删除记录「' + (rm.name || '') + '」');
-        } },
-      { label: canDelFile ? '记录与文件同时删除' : '记录与文件同时删除（文件未就绪）',
-        cls: 'warn',
-        disabled: !canDelFile,
-        fn: function () {
-          if (!canDelFile) { toast('文件尚未下载完成，无法删除文件'); return; }
-          closeSheet();
-          try { bridge.deleteDownloadedFile(t.name); } catch (e3) {}
-          var rm = removeTransferAt(idx);
-          saveTransfers();
-          renderTransfers();
-          if (rm) toast('已删除记录与文件「' + (rm.name || '') + '」');
-        } }
-    ];
-    $('sheet-title').textContent = t.name || '未命名';
-    var grid = $('sheet-grid');
-    grid.innerHTML = '';
-    items.forEach(function (it) {
-      var el = document.createElement('div');
-      el.className = 'sheet-grid-item ' + it.cls + (it.disabled ? ' disabled' : '');
-      var ic = document.createElement('div');
-      ic.className = 'sgi-icon';
-      ic.textContent = it.label;
-      el.appendChild(ic);
-      el.title = it.label;
-      el.addEventListener('click', it.fn);
-      grid.appendChild(el);
-    });
-    grid.style.gridTemplateColumns = 'repeat(2,1fr)';
-    show($('action-sheet'));
-  }
-  // 批量删除确认：仅删记录 / 记录与文件同时删除
-  function openBatchDeleteSheet(keys) {
-    var n = keys.length;
-    if (!n) { toast('请先选择要删除的传输项'); return; }
-    var anyFile = false;
-    keys.forEach(function (k) {
-      var parts = String(k).split('#');
-      var idx = Number(parts[1]);
-      var t = (parts[0] === 'u') ? (state.upQueue && state.upQueue[idx]) : (state.transfers && state.transfers[idx]);
-      if (transferFileDeletable(t)) anyFile = true;
-    });
-    var items = [
-      { label: '仅删除记录（' + n + '项）', cls: '', fn: function () { closeSheet(); doBatchDelete(keys, false); } },
-      { label: anyFile ? '记录与文件同时删除' : '记录与文件同时删除（无就绪文件）',
-        cls: 'warn', disabled: !anyFile,
-        fn: function () {
-          if (!anyFile) { toast('所选项目中无可删除的已下载文件'); return; }
-          closeSheet();
-          doBatchDelete(keys, true);
-        } }
-    ];
-    $('sheet-title').textContent = '删除 ' + n + ' 项传输记录';
-    var grid = $('sheet-grid');
-    grid.innerHTML = '';
-    items.forEach(function (it) {
-      var el = document.createElement('div');
-      el.className = 'sheet-grid-item ' + it.cls + (it.disabled ? ' disabled' : '');
-      var ic = document.createElement('div');
-      ic.className = 'sgi-icon';
-      ic.textContent = it.label;
-      el.appendChild(ic);
-      el.title = it.label;
-      el.addEventListener('click', it.fn);
-      grid.appendChild(el);
-    });
-    grid.style.gridTemplateColumns = 'repeat(2,1fr)';
-    show($('action-sheet'));
-  }
-  // 执行批量删除：keys 形如 "d#<idx>"（下载）/"u#<idx>"（上传）
-  function doBatchDelete(keys, withFile) {
-    var dlKeys = [], upKeys = [];
-    keys.forEach(function (k) {
-      var parts = String(k).split('#');
-      if (parts[0] === 'u') upKeys.push(Number(parts[1]));
-      else dlKeys.push(Number(parts[1]));
-    });
-    var removed = 0;
-    // 上传：倒序删除避免索引漂移；上传中项需先取消
-    upKeys.sort(function (a, b) { return b - a; }).forEach(function (i) {
-      var t = state.upQueue && state.upQueue[i];
-      if (!t) return;
-      if (t.status === 'uploading' || t.status === 'waiting') {
-        try { cancelUploadItem(t); } catch (e) {}
-      }
-      state.upQueue.splice(i, 1);
-      removed++;
-    });
-    // 下载：倒序删除
-    dlKeys.sort(function (a, b) { return b - a; }).forEach(function (i) {
-      var t = state.transfers && state.transfers[i];
-      if (!t) return;
-      if (withFile && transferFileDeletable(t)) {
-        try { bridge.deleteDownloadedFile(t.name); } catch (e2) {}
-      }
-      if (t.stream && Number(t.id) >= 900000000 && bridge && bridge.deleteDownloadTask) {
-        try { bridge.deleteDownloadTask(Number(t.id)); } catch (e3) {}
-      }
-      state.transfers.splice(i, 1);
-      removed++;
-    });
-    saveUpQueue();
-    saveTransfers();
-    state.transferSelected = {};
-    renderTransfers();
-    toast('已删除 ' + removed + ' 项' + (withFile ? '（含文件）' : '记录'));
-  }
-  // 退出批量模式
-  function exitTransferBatch() {
-    state.transferBatchMode = false;
-    state.transferSelected = {};
-    renderTransfers();
-  }
   function renderTransfers() {
     var box = $('transfer-list');
     var empty = $('transfer-empty');
-    // 同步批量工具栏显隐（离线页/无列表页签时隐藏）
-    var barEl = $('transfer-bar'), batchBarEl = $('transfer-batchbar');
-    var isListTab = (state.transferTab !== 'offline');
-    if (barEl) barEl.classList.toggle('hidden', !isListTab);
-    if (batchBarEl) batchBarEl.classList.toggle('hidden', !(isListTab && state.transferBatchMode));
     var arr = state.transfers || loadTransfers();
     state.transfers = arr;
     var ups = state.upQueue || loadUpQueue();
@@ -740,16 +590,11 @@
       } else if (ut.status === 'failed' || ut.status === 'cancelled') {
         ubtn = '<button class="transfer-act t-upretry" data-u="' + u + '">重试</button>';
       }
-      var ubm = state.transferBatchMode;
-      var ukey = 'u#' + u;
-      var uchk = ubm ? '<div class="transfer-chk' + (state.transferSelected[ukey] ? ' on' : '') + '" data-key="' + ukey + '"></div>' : '';
-      var udelHtml = ubm ? '' : ('<button class="up-del" data-u="' + u + '" title="移除记录">×</button>');
-      html += '<div class="transfer-item' + (ubm ? ' batch-mode' : '') + '" data-key="' + ukey + '">'
-        + uchk
+      html += '<div class="transfer-item">'
         + '<div class="transfer-ic ic-' + uicName + '" data-icon="' + uicName + '"></div>'
         + '<div class="transfer-info"><div class="transfer-name">' + esc(unm) + '</div>'
         + '<div class="transfer-sub">' + esc(usz) + ' · ' + esc(ulabel) + '</div></div>'
-        + ubtn + udelHtml
+        + ubtn + '<button class="up-del" data-u="' + u + '" title="移除记录">×</button>'
         + '</div>';
     }
     for (var i = 0; tab !== 'upload' && i < arr.length; i++) {
@@ -774,36 +619,16 @@
       else if (t.status === 'paused') mainBtn = '<button class="transfer-act t-resume" data-i="' + i + '">继续</button>';
       else if (t.status === 'failed') mainBtn = '<button class="transfer-act t-retry" data-i="' + i + '">重试</button>';
       else mainBtn = '<button class="transfer-open disabled" data-i="' + i + '">打开</button>';
-      var bm = state.transferBatchMode;
-      var dkey = 'd#' + i;
-      var chk = bm ? '<div class="transfer-chk' + (state.transferSelected[dkey] ? ' on' : '') + '" data-key="' + dkey + '"></div>' : '';
-      var delBtnHtml = bm ? '' : ('<button class="transfer-del" data-i="' + i + '" title="删除记录">×</button>');
-      html += '<div class="transfer-item' + (bm ? ' batch-mode' : '') + '" data-key="' + dkey + '">'
-        + chk
+      html += '<div class="transfer-item">'
         + icHtml
         + '<div class="transfer-info"><div class="transfer-name">' + esc(nm) + '</div>'
         + '<div class="transfer-sub">' + esc(sz) + ' · ' + esc(label) + '</div></div>'
-        + mainBtn + delBtnHtml
+        + mainBtn + '<button class="transfer-del" data-i="' + i + '" title="删除记录">×</button>'
         + '</div>';
     }
     box.innerHTML = html;
     // 注入动态生成的类型徽章图标（修复传输列表图标不显示）
     injectIcons(box);
-    // 批量模式：点击整项或勾选框切换选中（不触发单条操作）
-    if (state.transferBatchMode) {
-      box.querySelectorAll('.transfer-chk, .transfer-item.batch-mode').forEach(function (el) {
-        el.addEventListener('click', function (e) {
-          e.stopPropagation();
-          var host = el.classList.contains('transfer-item') ? el : el.parentNode;
-          var key = (host && host.getAttribute) ? host.getAttribute('data-key') : null;
-          if (!key) return;
-          if (state.transferSelected[key]) delete state.transferSelected[key];
-          else state.transferSelected[key] = true;
-          var chkEl = host.querySelector('.transfer-chk');
-          if (chkEl) chkEl.classList.toggle('on', !!state.transferSelected[key]);
-        });
-      });
-    }
     // 打开按钮：apk 走安装程序，其他走系统推荐打开方式
     box.querySelectorAll('.transfer-open').forEach(function (btn) {
       btn.addEventListener('click', function () {
@@ -890,12 +715,52 @@
         toast('正在重试...');
       });
     });
-    // 删除按钮：弹窗确认「仅删记录 / 记录与文件同时删除」（任意状态均弹窗）
+    // 删除按钮：结束原生任务并从传输列表移除该条记录
     box.querySelectorAll('.transfer-del').forEach(function (btn) {
       btn.addEventListener('click', function (e) {
         e.stopPropagation();
         var idx = Number(btn.getAttribute('data-i'));
-        openTransferDeleteSheet(idx);
+        var t = state.transfers && state.transfers[idx];
+        if (!t) return;
+        // 文件是否可删：已完成/成功且有文件名（与原来一致）
+        var isDone = (t.status === 'completed' || t.status === 'done' || Number(t.status) === 8 || Number(t.status) === 16);
+        var canDelFile = !!(isDone && t.name && bridge && bridge.deleteDownloadedFile);
+        var delFile = function () {
+          if (t.stream && Number(t.id) >= 900000000 && bridge && bridge.deleteDownloadTask) {
+            try { bridge.deleteDownloadTask(Number(t.id)); } catch (e2) {}
+          }
+          state.transfers.splice(idx, 1);
+          saveTransfers();
+          renderTransfers();
+          toast('已删除传输记录「' + (t.name || '') + '」');
+        };
+        // 删除记录时一律弹窗确认删除类型
+        var items = [
+          { label: '仅删除记录', cls: '', fn: function () { closeSheet(); delFile(); } },
+          { label: canDelFile ? '记录与文件同时删除' : '记录与文件同时删除（文件未就绪）',
+            cls: 'warn',
+            fn: function () {
+              if (!canDelFile) { toast('文件尚未下载完成，无法删除文件'); return; }
+              closeSheet();
+              try { bridge.deleteDownloadedFile(t.name); } catch (e3) {}
+              delFile();
+            } }
+        ];
+        $('sheet-title').textContent = t.name || '未命名';
+        var grid = $('sheet-grid');
+        grid.innerHTML = '';
+        items.forEach(function (it) {
+          var el = document.createElement('div');
+          el.className = 'sheet-grid-item ' + it.cls;
+          var ic = document.createElement('div'); ic.className = 'sgi-icon';
+          ic.textContent = it.label;
+          el.appendChild(ic);
+          el.title = it.label;
+          el.addEventListener('click', it.fn);
+          grid.appendChild(el);
+        });
+        grid.style.gridTemplateColumns = 'repeat(2,1fr)';
+        show($('action-sheet'));
       });
     });
     // 上传任务：取消 / 重试 / 移除记录
@@ -3851,46 +3716,9 @@
         var tv = b.getAttribute('data-ttab');
         state.transferTab = (tv === 'upload' || tv === 'offline') ? tv : 'download';
         try { localStorage.setItem('pan_ttab', state.transferTab); } catch (e) {}
-        state.transferBatchMode = false;
-        state.transferSelected = {};
         renderTransfers();
       });
     });
-    // 传输页「批量管理」：进入/退出批量模式
-    var tbarBatch = $('tbar-batch');
-    if (tbarBatch) tbarBatch.addEventListener('click', function () {
-      state.transferBatchMode = !state.transferBatchMode;
-      state.transferSelected = {};
-      renderTransfers();
-    });
-    // 批量全选 / 取消全选
-    var tbatchAll = $('tbatch-all');
-    if (tbatchAll) tbatchAll.addEventListener('click', function () {
-      var tab = state.transferTab === 'upload' ? 'upload' : 'download';
-      var list = (tab === 'upload') ? (state.upQueue || []) : (state.transfers || []);
-      var pref = (tab === 'upload') ? 'u#' : 'd#';
-      var allOn = list.length > 0;
-      for (var i = 0; i < list.length; i++) { if (!state.transferSelected[pref + i]) { allOn = false; break; } }
-      if (allOn) {
-        state.transferSelected = {};
-        tbatchAll.textContent = '全选';
-      } else {
-        for (var j = 0; j < list.length; j++) state.transferSelected[pref + j] = true;
-        tbatchAll.textContent = '取消全选';
-      }
-      renderTransfers();
-    });
-    // 批量删除选中
-    var tbatchDel = $('tbatch-del');
-    if (tbatchDel) tbatchDel.addEventListener('click', function () {
-      var keys = [];
-      for (var k in state.transferSelected) { if (state.transferSelected[k]) keys.push(k); }
-      if (!keys.length) { toast('请先选择要删除的传输项'); return; }
-      openBatchDeleteSheet(keys);
-    });
-    // 取消批量模式
-    var tbatchCancel = $('tbatch-cancel');
-    if (tbatchCancel) tbatchCancel.addEventListener('click', exitTransferBatch);
     // 登录（统一官方登录页）
     var officialLoginBtn = $('official-login-btn');
     if (officialLoginBtn) officialLoginBtn.addEventListener('click', openOfficialLogin);
