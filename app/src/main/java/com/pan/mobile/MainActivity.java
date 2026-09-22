@@ -73,6 +73,7 @@ public class MainActivity extends Activity {
     // （表现为两次扫描文件数不一致）。提升到 12 以覆盖递归遍历的并发峰值。
     private final ExecutorService executor = Executors.newFixedThreadPool(12);
     private SharedPreferences prefs;
+    private String downloadSubDir = "123云盘";
 
     private static final String PREF = "pan_prefs";
     private static final String KEY_TOKEN = "token";
@@ -83,6 +84,7 @@ public class MainActivity extends Activity {
     private ValueCallback<Uri[]> uploadMessage;
     private static final int FILE_CHOOSER_REQUEST = 1001;
     private static final int FOLDER_PICK_REQUEST = 1002;
+    private static final int DOWNLOAD_DIR_PICK_REQUEST = 1003;
 
     private String loginuuid = UUID.randomUUID().toString().replace("-", "");
     private String deviceType = "X12";
@@ -127,6 +129,7 @@ public class MainActivity extends Activity {
         webView = new WebView(this);
         setContentView(webView);
         prefs = getSharedPreferences(PREF, Context.MODE_PRIVATE);
+        downloadSubDir = prefs.getString("download_sub_dir", "123云盘");
         loginuuid = prefs.getString("loginuuid", loginuuid);
 
         WebSettings ws = webView.getSettings();
@@ -310,6 +313,33 @@ public class MainActivity extends Activity {
                             }
                         }
                     });
+                }
+            });
+            return;
+        }
+        if (requestCode == DOWNLOAD_DIR_PICK_REQUEST) {
+            if (resultCode != RESULT_OK || data == null || data.getData() == null) return;
+            Uri treeUri = data.getData();
+            String dirName = "123云盘";
+            try {
+                String last = treeUri.getLastPathSegment();
+                if (last != null) {
+                    int colon = last.indexOf(':');
+                    if (colon >= 0) last = last.substring(colon + 1);
+                    int slash = last.lastIndexOf('/');
+                    if (slash >= 0) last = last.substring(slash + 1);
+                    if (last != null && !last.isEmpty()) dirName = last;
+                }
+            } catch (Exception ignore) {}
+            final String finalName = dirName;
+            setDownloadSubDir(finalName);
+            handler.post(new Runnable() {
+                @Override public void run() {
+                    toast("/Download/" + finalName);
+                    if (webView != null) {
+                        String js = "window.__onDownloadDirPicked&&window.__onDownloadDirPicked('" + finalName + "');";
+                        webView.evaluateJavascript(js, null);
+                    }
                 }
             });
             return;
@@ -773,22 +803,32 @@ public class MainActivity extends Activity {
             t.running = false;
         }
     }
-    // ===== GitHub 更新包下载（自动更新专用）：直连 + 镜像回退 + 自动重试 + 严格字节校验 =====
-    /** GitHub 更新包下载的镜像前缀（直连失败后按顺序回退） */
+    // ===== GitHub 更新包下载（自动更新专用）：并发测速择优 + 镜像回退 + 自动重试 + 严格字节校验 =====
+    /** GitHub 更新包下载的镜像前缀（用户指定线路；仅用于更新包，不影响其它下载） */
     private static final String[] GITHUB_MIRROR_PREFIXES = new String[] {
-        "https://ghfast.top/",
-        "https://gh-proxy.com/",
         "https://ghproxy.net/",
-        "https://gh.llkk.cc/"
+        "https://gh-proxy.com/",
+        "https://gh-proxy.org/"
+    };
+
+    /** 镜像域名识别表（用于判定 "是否已是镜像形态" 及 isGithubUpdateUrl） */
+    private static final String[] GITHUB_MIRROR_HOSTS = new String[] {
+        "ghproxy.net/", "gh-proxy.com/", "gh-proxy.org/"
     };
 
     /** 判断是否为 GitHub 更新包下载（自动更新场景：github.com / 镜像地址） */
     private boolean isGithubUpdateUrl(String url) {
         if (url == null) return false;
         String u = url.toLowerCase();
-        return u.contains("github.com/") || u.contains("githubusercontent.com/")
-            || u.contains("ghfast.top/") || u.contains("gh-proxy.com/")
-            || u.contains("ghproxy.net/") || u.contains("gh.llkk.cc/");
+        if (u.contains("github.com/") || u.contains("githubusercontent.com/")) return true;
+        for (String h : GITHUB_MIRROR_HOSTS) if (u.contains(h)) return true;
+        return false;
+    }
+
+    /** 是否已是镜像形态（避免套娃拼接） */
+    private static boolean isMirrorHost(String u) {
+        for (String h : GITHUB_MIRROR_HOSTS) if (u.contains(h)) return true;
+        return false;
     }
 
     /** 构建 GitHub 下载候选链：官方直连优先，随后逐个镜像前缀 */
@@ -796,12 +836,120 @@ public class MainActivity extends Activity {
         java.util.List<String> list = new java.util.ArrayList<String>();
         if (url == null) return list;
         String u = url.trim();
-        boolean isMirror = u.contains("ghfast.top/") || u.contains("gh-proxy.com/")
-            || u.contains("ghproxy.net/") || u.contains("gh.llkk.cc/");
-        if (isMirror) { list.add(u); return list; } // 已是镜像形态：只试自身，避免套娃
+        if (isMirrorHost(u)) { list.add(u); return list; } // 已是镜像形态：只试自身，避免套娃
         list.add(u);
         for (String m : GITHUB_MIRROR_PREFIXES) list.add(m + u);
         return list;
+    }
+
+    // ---- 更新包线路测速择优（仅作用于 GitHub 更新包；结果缓存 30 分钟） ----
+    /** 测速探测字节数：每个候选拉取前 ~256KB 计时 */
+    private static final int GH_SPEED_PROBE_BYTES = 256 * 1024;
+    /** 单候选测速等待上限（毫秒） */
+    private static final int GH_SPEED_PROBE_TIMEOUT_MS = 4500;
+    /** 测速结果缓存有效期：30 分钟 */
+    private static final long GH_SPEED_CACHE_TTL_MS = 30L * 60L * 1000L;
+    /** 测速缓存：以 "直连原始 URL" 为 key -> 最优候选 URL */
+    private static final java.util.Map<String, String> GH_SPEED_CACHE =
+        new java.util.concurrent.ConcurrentHashMap<String, String>();
+    /** 测速缓存写入时间：key -> 时间戳 */
+    private static final java.util.Map<String, Long> GH_SPEED_CACHE_AT =
+        new java.util.concurrent.ConcurrentHashMap<String, Long>();
+
+    /**
+     * 测速择优：并发对全部候选各拉取前 ~256KB 并计时，返回速度最高者的 URL。
+     * 结果按 30 分钟缓存（以原始 URL 为 key）。任何异常都回退为 null（调用方用原生候选链）。
+     */
+    private String pickFastestGithubUrl(String originalUrl) {
+        try {
+            if (originalUrl == null) return null;
+            String key = originalUrl.trim();
+            Long at = GH_SPEED_CACHE_AT.get(key);
+            String cached = GH_SPEED_CACHE.get(key);
+            if (cached != null && at != null && (System.currentTimeMillis() - at) < GH_SPEED_CACHE_TTL_MS) {
+                logDl("github speed: cache hit -> " + cached);
+                return cached;
+            }
+            java.util.List<String> cands = buildGithubCandidates(key);
+            if (cands.size() <= 1) return null; // 只有一条，无需测速
+            final java.util.concurrent.atomic.AtomicReference<String> best =
+                new java.util.concurrent.atomic.AtomicReference<String>(null);
+            final java.util.concurrent.atomic.AtomicLong bestSpeed =
+                new java.util.concurrent.atomic.AtomicLong(0L);
+            java.util.List<Thread> threads = new java.util.ArrayList<Thread>();
+            for (final String cand : cands) {
+                Thread th = new Thread(new Runnable() {
+                    public void run() {
+                        long sp = probeSpeed(cand);
+                        logDl("github speed probe: " + sp + " B/s <- " + cand);
+                        if (sp > 0) {
+                            long cur;
+                            do {
+                                cur = bestSpeed.get();
+                                if (sp <= cur) break;
+                            } while (!bestSpeed.compareAndSet(cur, sp));
+                            if (bestSpeed.get() == sp) best.set(cand);
+                        }
+                    }
+                });
+                th.setDaemon(true);
+                threads.add(th);
+                th.start();
+            }
+            for (Thread th : threads) {
+                try { th.join(GH_SPEED_PROBE_TIMEOUT_MS + 1500); } catch (InterruptedException ignore) {}
+            }
+            String winner = best.get();
+            if (winner != null) {
+                GH_SPEED_CACHE.put(key, winner);
+                GH_SPEED_CACHE_AT.put(key, System.currentTimeMillis());
+                logDl("github speed: fastest -> " + winner + " (cache 30min)");
+            } else {
+                logDl("github speed: no candidate measurable, fallback to default chain");
+            }
+            return winner;
+        } catch (Throwable e) {
+            logDl("github speed EXCEPTION " + e);
+            return null;
+        }
+    }
+
+    /** 探测单个候选的下载速度（B/s）。失败/超时返回 0。仅读取前 ~256KB 即断开，不落盘。 */
+    private long probeSpeed(String url) {
+        java.net.HttpURLConnection conn = null;
+        java.io.InputStream in = null;
+        try {
+            java.net.URL u = new java.net.URL(url);
+            conn = (java.net.HttpURLConnection) u.openConnection();
+            conn.setConnectTimeout(GH_SPEED_PROBE_TIMEOUT_MS);
+            conn.setReadTimeout(GH_SPEED_PROBE_TIMEOUT_MS);
+            conn.setInstanceFollowRedirects(true);
+            conn.setRequestProperty("User-Agent",
+                "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Mobile Safari/537.36");
+            conn.setRequestProperty("Accept", "application/octet-stream,*/*");
+            conn.setRequestProperty("Range", "bytes=0-" + (GH_SPEED_PROBE_BYTES - 1));
+            int code = conn.getResponseCode();
+            if (code < 200 || code >= 400) return 0;
+            in = conn.getInputStream();
+            byte[] buf = new byte[16384];
+            long total = 0;
+            long t0 = System.currentTimeMillis();
+            long deadline = t0 + GH_SPEED_PROBE_TIMEOUT_MS;
+            while (total < GH_SPEED_PROBE_BYTES) {
+                if (System.currentTimeMillis() > deadline) break;
+                int n = in.read(buf);
+                if (n <= 0) break;
+                total += n;
+            }
+            long dt = System.currentTimeMillis() - t0;
+            if (total <= 0 || dt <= 0) return 0;
+            return total * 1000L / dt;
+        } catch (Throwable e) {
+            return 0;
+        } finally {
+            try { if (in != null) in.close(); } catch (Exception ignore) {}
+            try { if (conn != null) conn.disconnect(); } catch (Exception ignore) {}
+        }
     }
 
     /**
@@ -813,6 +961,16 @@ public class MainActivity extends Activity {
             logDl("task#" + t.id + " github dl: fname=" + t.filename + " expected=" + t.expected + " url=" + t.url);
             java.util.List<String> candidates = buildGithubCandidates(t.url);
             if (candidates.isEmpty()) { t.status = 16; return; }
+            // 新增：并发测速择优（缓存 30 分钟），将最优候选提到首位，其余仍作回退保留鲁棒性
+            try {
+                String fastest = pickFastestGithubUrl(t.url);
+                if (fastest != null && candidates.size() > 1)
+                    candidates.remove(fastest); // 先移除避免重复
+                if (fastest != null) {
+                    candidates.add(0, fastest);
+                    logDl("task#" + t.id + " speed-first candidate: " + fastest);
+                }
+            } catch (Throwable ignore) {}
             final int rounds = 2; // 全候选失败后整体再来一轮
             for (int round = 0; round < rounds; round++) {
                 if (t.cancelled) return;
@@ -2176,6 +2334,81 @@ public class MainActivity extends Activity {
         return ut.id;
     }
 
+    // ---- 是否深色模式 ----
+    public boolean isSystemDark() {
+        try {
+            int nightMode = getResources().getConfiguration().uiMode
+                & android.content.res.Configuration.UI_MODE_NIGHT_MASK;
+            return nightMode == android.content.res.Configuration.UI_MODE_NIGHT_YES;
+        } catch (Exception e) { return false; }
+    }
+    // ---- 屏幕常亮 ----
+    private android.os.PowerManager.WakeLock wakeLock;
+    public void setKeepScreenOn(final boolean on) {
+        runOnUiThread(new Runnable() { @Override public void run() {
+            try {
+                if (on) {
+                    getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+                    if (wakeLock == null) {
+                        android.os.PowerManager pm = (android.os.PowerManager) getSystemService(POWER_SERVICE);
+                        wakeLock = pm.newWakeLock(android.os.PowerManager.SCREEN_BRIGHT_WAKE_LOCK | android.os.PowerManager.ACQUIRE_CAUSES_WAKEUP, "pan:keep");
+                        wakeLock.setReferenceCounted(false);
+                    }
+                    if (!wakeLock.isHeld()) wakeLock.acquire();
+                } else {
+                    getWindow().clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+                    if (wakeLock != null && wakeLock.isHeld()) wakeLock.release();
+                }
+            } catch (Throwable ignore) {}
+        }});
+    }
+    // ---- 自定义下载目录 ----
+    public String getDownloadSubDir() {
+        return downloadSubDir == null ? "123云盘" : downloadSubDir;
+    }
+    public void setDownloadSubDir(String dir) {
+        if (dir == null) dir = "123云盘";
+        dir = dir.trim();
+        if (dir.isEmpty()) dir = "123云盘";
+        downloadSubDir = dir;
+        if (prefs != null) prefs.edit().putString("download_sub_dir", dir).apply();
+    }
+    public String downloadRelPath() {
+        return Environment.DIRECTORY_DOWNLOADS + "/" + getDownloadSubDir();
+    }
+    // 删除已下载文件（文件系统 + MediaStore 记录）
+    public void deleteDownloadedFile(String fileName) {
+        if (fileName == null || fileName.isEmpty()) return;
+        try {
+            File dir = Environment.getExternalStoragePublicDirectory(downloadRelPath());
+            File f = new File(dir, fileName);
+            if (f.exists()) f.delete();
+            File oldDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
+            File f2 = new File(oldDir, fileName);
+            if (f2.exists()) f2.delete();
+        } catch (Exception ignore) {}
+        try {
+            android.content.ContentResolver cr = getContentResolver();
+            Uri uri = android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI;
+            String[] sel = new String[] { fileName };
+            cr.delete(uri, android.provider.MediaStore.MediaColumns.DISPLAY_NAME + "=?", sel);
+        } catch (Exception ignore) {}
+    }
+    /** 调起 SAF 目录树，选择下载子目录 */
+    public void pickDownloadDir() {
+        handler.post(new Runnable() {
+            @Override public void run() {
+                try {
+                    Intent it = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
+                    it.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                    startActivityForResult(it, DOWNLOAD_DIR_PICK_REQUEST);
+                } catch (Exception e) {
+                    Log.e("PAN", "pickDownloadDir fail: " + e, e);
+                    toast("无法打开文件夹选择器");
+                }
+            }
+        });
+    }
     /** 调起系统文件夹选择器（SAF 目录树），用于文件夹上传（保留目录结构） */
     public void pickFolder() {
         handler.post(new Runnable() {
@@ -3039,7 +3272,19 @@ public class MainActivity extends Activity {
         }
         @JavascriptInterface
         public void cancelUploadTask(final long taskId) { act.cancelUploadTask(taskId); }
-        // 文件夹选择（SAF 目录树；用户选择后由原生遍历并回传文件列表）
+        // 二改新增 bridge
+        @JavascriptInterface
+        public void setKeepScreenOn(boolean on) { act.setKeepScreenOn(on); }
+        @JavascriptInterface
+        public boolean isSystemDark() { return act.isSystemDark(); }
+        @JavascriptInterface
+        public String getDownloadSubDir() { return act.getDownloadSubDir(); }
+        @JavascriptInterface
+        public void setDownloadSubDir(String dir) { act.setDownloadSubDir(dir); }
+        @JavascriptInterface
+        public void pickDownloadDir() { act.pickDownloadDir(); }
+        @JavascriptInterface
+        public void deleteDownloadedFile(String fileName) { act.deleteDownloadedFile(fileName); }
         @JavascriptInterface
         public void pickFolder() { act.pickFolder(); }
 
