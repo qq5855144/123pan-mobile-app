@@ -472,40 +472,6 @@ svg { display: block; }
   color: #b0b6c2; font-size: 18px; line-height: 1; display: flex; align-items: center; justify-content: center;
   background: #f5f7fb; transition: color .2s, background .2s;
 }
-/* 传输页顶部工具栏（批量管理入口） */
-.transfer-bar { display: flex; justify-content: flex-end; padding: 0 2px 10px; }
-.tbar-btn {
-  height: 30px; padding: 0 14px; border-radius: 15px; border: 1px solid #e8ecf3;
-  background: #fff; color: #5a6b8a; font-size: 13px; font-weight: 500;
-}
-.tbar-btn:active { background: #eef2f8; }
-/* 批量模式：项内勾选框 */
-.transfer-item.batch-mode { padding-left: 8px; }
-.transfer-chk {
-  flex: 0 0 20px; width: 20px; height: 20px; margin-right: 10px; border-radius: 50%;
-  border: 1.5px solid #cfd6e2; background: #fff; box-sizing: border-box;
-  display: flex; align-items: center; justify-content: center; transition: background .15s, border-color .15s;
-}
-.transfer-chk.on { background: #2B6DE8; border-color: #2B6DE8; }
-.transfer-chk.on::after {
-  content: ''; width: 5px; height: 9px; border: solid #fff; border-width: 0 2px 2px 0;
-  transform: rotate(45deg) translate(-1px, -1px);
-}
-/* 批量操作底栏 */
-.transfer-batchbar {
-  position: sticky; bottom: 0; left: 0; right: 0; display: flex; gap: 10px;
-  padding: 10px 4px calc(10px + env(safe-area-inset-bottom, 0px));
-  background: var(--bg, #f7f8fb);
-}
-.tbatch-btn {
-  flex: 1; height: 40px; border-radius: 12px; border: 1px solid #e8ecf3;
-  background: #fff; color: #5a6b8a; font-size: 14px; font-weight: 500;
-}
-.tbatch-btn:active { background: #eef2f8; }
-.tbatch-btn.danger { background: #e5484d; border-color: #e5484d; color: #fff; font-weight: 600; }
-.tbatch-btn.danger:active { opacity: .85; }
-/* 删除确认浮层中禁用项样式 */
-.sheet-grid-item.disabled { opacity: .45; }
 .transfer-del:active, .up-del:active { background: #fdecec; color: #e5484d; }
 .transfer-act {
   flex: 0 0 auto; height: 30px; padding: 0 12px; margin-left: 8px; border-radius: 15px;
