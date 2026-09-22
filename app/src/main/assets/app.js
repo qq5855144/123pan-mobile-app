@@ -709,7 +709,17 @@
     var et = $('transfer-empty-title');
     if (et) et.textContent = tab === 'upload' ? '暂无上传任务' : '暂无下载任务';
     var es = $('transfer-empty-sub');
-    if (es) es.textContent = tab === 'upload' ? '上传任务将在此实时显示' : '下载文件保存在系统下载目录';
+    if (es) {
+      if (tab === 'upload') { es.textContent = '上传任务将在此实时显示'; }
+      else {
+        var dd = '123云盘';
+        if (bridge) {
+          if (bridge.getDownloadSubDirDisplay) { try { dd = bridge.getDownloadSubDirDisplay() || dd; } catch (e) {} }
+          else if (bridge.getDownloadSubDir) { try { dd = bridge.getDownloadSubDir() || dd; } catch (e) {} }
+        }
+        es.textContent = '下载文件保存在 ' + (dd === 'Download' ? 'Download' : ('Download/' + dd));
+      }
+    }
     if (!list.length) {
       if (empty) show(empty);
       box.innerHTML = '';
@@ -818,7 +828,12 @@
         if (t.status !== 'completed') { toast('文件未下载完成，暂不能打开'); return; }
         if (bridge && bridge.openFile) { bridge.openFile(t.name); }
         else {
-          var p = '/sdcard/Download/' + t.name;
+          var subd = '123云盘';
+          if (bridge) {
+            if (bridge.getDownloadSubDirDisplay) { try { subd = bridge.getDownloadSubDirDisplay() || subd; } catch (e) {} }
+            else if (bridge.getDownloadSubDir) { try { subd = bridge.getDownloadSubDir() || subd; } catch (e) {} }
+          }
+          var p = (subd === 'Download') ? ('/sdcard/Download/' + t.name) : ('/sdcard/Download/' + subd + '/' + t.name);
           if (/\.apk$/i.test(t.name)) { bridge.openApk && bridge.openApk(p); }
         }
       });
@@ -3556,14 +3571,21 @@
   }
 
   // ---------- 下载目录 ----------
+  // 展示用：优先取原生 display（会把内部根标记 "." 翻译成 "Download"）
+  function getDirDisplay() {
+    var d = '123云盘';
+    if (bridge) {
+      if (bridge.getDownloadSubDirDisplay) { try { d = bridge.getDownloadSubDirDisplay() || d; } catch (e) {} }
+      else if (bridge.getDownloadSubDir) { try { d = bridge.getDownloadSubDir() || d; } catch (e) {} }
+    }
+    return d;
+  }
   function renderDownloadDir() {
     var el = $('mine-dir-val');
     if (!el) return;
-    var d = '123云盘';
-    if (bridge && bridge.getDownloadSubDir) {
-      try { d = bridge.getDownloadSubDir() || d; } catch (e) {}
-    }
-    el.textContent = 'Download/' + d;
+    var d = getDirDisplay();
+    // 显示名已是 "Download"（根）时不再重复前缀
+    el.textContent = (d === 'Download') ? 'Download' : ('Download/' + d);
   }
   function onChangeDownloadDir() {
     if (bridge && bridge.pickDownloadDir) {
@@ -3572,13 +3594,10 @@
       toast('当前环境不支持选择目录');
     }
   }
-  // NativeBridge 选定目录后回调
+  // NativeBridge 选定目录后回调（原生已持久化，这里只刷新 UI）
   window.__onDownloadDirPicked = function (dir) {
-    if (dir) {
-      if (bridge && bridge.setDownloadSubDir) { try { bridge.setDownloadSubDir(dir); } catch (e) {} }
-      renderDownloadDir();
-      toast('下载目录已更新');
-    }
+    renderDownloadDir();
+    toast('下载目录已更新：' + (dir === 'Download' ? 'Download' : ('Download/' + dir)));
   };
 
   // ---------- 重名文件处理策略 ----------
