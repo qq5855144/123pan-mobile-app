@@ -509,6 +509,30 @@ svg { display: block; }
 .st-btn.danger { background: #fdecec; border-color: #fdecec; color: #e5484d; }
 .st-btn.danger.disabled { background: #fdf5f5; border-color: #fdf5f5; color: #f2c0c2; }
 
+/* 传输页底部工具栏：全选 / 删除 */
+#transfer-toolbar {
+  position: fixed; left: 0; right: 0; bottom: 56px; height: 58px; z-index: 20;
+  display: flex; align-items: center; justify-content: space-evenly;
+  background: rgba(255,255,255,.96); border-top: 1px solid #eef0f5; backdrop-filter: blur(6px);
+  transition: transform .22s ease, opacity .22s ease;
+  will-change: transform;
+}
+#transfer-toolbar.hidden { display: none; }
+#transfer-toolbar .tool-btn { cursor: pointer; }
+#transfer-toolbar .tool-btn:active { opacity: .6; }
+/* 传输列表项勾选态 */
+.transfer-item { position: relative; }
+.transfer-item.tt-sel { background: #eef4ff; }
+.transfer-chk {
+  width: 20px; height: 20px; border-radius: 50%; border: 1.6px solid #c7cdd8;
+  flex: 0 0 auto; margin-right: 4px; box-sizing: border-box; position: relative;
+}
+.transfer-item.tt-sel .transfer-chk { background: #2B6DE8; border-color: #2B6DE8; }
+.transfer-item.tt-sel .transfer-chk::after {
+  content: ''; position: absolute; left: 6px; top: 2px; width: 5px; height: 10px;
+  border: solid #fff; border-width: 0 2px 2px 0; transform: rotate(45deg);
+}
+
 /* 移动文件夹选择器 */
 .move-panel { max-height: 70vh; display: flex; flex-direction: column; }
 .picker-crumb {
