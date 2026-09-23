@@ -6,6 +6,7 @@ import android.app.Dialog;
 import android.app.DownloadManager;
 import android.content.Context;
 import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.database.Cursor;
@@ -546,6 +547,26 @@ public class MainActivity extends Activity {
         }
     }
 
+    // 读取剪贴板文本。注意：Android 10 (API 29) 起系统限制后台应用读取剪贴板，
+    // 只有应用处于前台（或前台输入法）时才可读到，因此该能力仅在 onResume 后调用有效。
+    @SuppressLint("NewApi")
+    public String readClipboardText() {
+        try {
+            ClipboardManager cm = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+            if (cm == null || !cm.hasPrimaryClip()) { Log.d("PAN", "clip: no primary clip"); return ""; }
+            ClipData clip = cm.getPrimaryClip();
+            if (clip == null || clip.getItemCount() <= 0) { Log.d("PAN", "clip: empty clip"); return ""; }
+            ClipData.Item item = clip.getItemAt(0);
+            CharSequence text = item.getText();
+            if (text == null && item.getUri() != null) text = item.getUri().toString();
+            String out = text == null ? "" : text.toString();
+            Log.d("PAN", "clip read len=" + out.length() + " head=" + (out.length() > 40 ? out.substring(0, 40) : out));
+            return out;
+        } catch (Exception e) {
+            Log.w("PAN", "readClipboardText fail: " + e);
+            return "";
+        }
+    }
 
     // 使用系统 DownloadManager 下载；返回下载任务 ID，若为 -1 表示失败。
     private long downloadViaManager(String url, String name) {
@@ -3148,9 +3169,15 @@ public class MainActivity extends Activity {
     static class NativeBridge {
         private final MainActivity act;
         NativeBridge(MainActivity a) { this.act = a; }
-
         @JavascriptInterface
         public void toast(final String msg) { act.toast(msg); }
+
+        // 读取剪贴板文本（应用在前台时调用；Android 10+ 后台读取会被系统拦截）
+        // 用于「打开 APP 时若剪贴板是 123 分享链接则自动打开」
+        @JavascriptInterface
+        public String getClipboardText() {
+            return act.readClipboardText();
+        }
 
         @JavascriptInterface
         public void apiRequest(final String callback, final String method,
