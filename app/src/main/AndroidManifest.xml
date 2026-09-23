@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="com.pan.mobile"
+    xmlns:tools="http://schemas.android.com/tools"
+    package="com.pan.mobile2"
     android:versionCode="170"
     android:versionName="1.7.0">
 
@@ -11,16 +12,19 @@
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
         android:maxSdkVersion="29" />
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <!-- 读取剪贴板：应用在前台时用于识别 123 分享链接并自动打开（Android 10+ 仅前台可读） -->
+    <uses-permission android:name="android.permission.READ_CLIPBOARD"
+        tools:ignore="ProtectedPermissions" />
 
     <application
-        android:label="123云盘"
+        android:label="123\u4e91\u76d8"
         android:icon="@mipmap/ic_launcher"
         android:theme="@style/AppTheme"
         android:allowBackup="true"
         android:networkSecurityConfig="@xml/network_security_config">
 
         <activity
-            android:name=".MainActivity"
+            android:name="com.pan.mobile.MainActivity"
             android:exported="true"
             android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize"
             android:windowSoftInputMode="adjustResize">
@@ -31,8 +35,8 @@
         </activity>
 
         <provider
-            android:name=".PanProvider"
-            android:authorities="com.pan.mobile.pan"
+            android:name="com.pan.mobile.PanProvider"
+            android:authorities="com.pan.mobile2.pan"
             android:grantUriPermissions="true"
             android:exported="true" />
     </application>
