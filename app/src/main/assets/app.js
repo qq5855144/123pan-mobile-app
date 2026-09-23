@@ -1019,12 +1019,17 @@
     hide($('page-login'));
     show($('page-main'));
     switchView('files');
+    // 进入主界面后检测剪贴板分享链接（登录/会话恢复/启动 均会走到这里）
+    setTimeout(function () { try { if (typeof tryAutoOpenFromClipboard === 'function') tryAutoOpenFromClipboard(); } catch (e) {} }, 350);
   }
 
   // App 切后台钩子（由原生 onPause 调用；已移除扫码登录，无需额外处理）
   window.__onAppPause = function () {};
   // App 回前台钩子（由原生 onResume 调用）
-  window.__onAppResume = function () {};
+  // 若剪贴板最新内容为 123 分享链接，则自动打开「接收分享」（同一链接只自动打开一次）
+  window.__onAppResume = function () {
+    try { if (typeof tryAutoOpenFromClipboard === 'function') tryAutoOpenFromClipboard(); } catch (e) {}
+  };
 
 
   // ---------- 会话恢复 ----------
@@ -3189,6 +3194,63 @@
     key = key.replace(/^[-_\s]+|[-_\s]+$/g, '');
     if (!key) return null;
     return { key: key, pwd: pwd };
+  }
+
+  // ---- 剪贴板自动识别分享链接 ----
+  // 打开 APP / 回前台时读取剪贴板，若为 123 分享链接（或分享码）则自动进入并打开「接收分享」。
+  // 约束：
+  //   1) 仅在已登录进入主界面时触发（避免登录页误弹）；
+  //   2) 同一内容做「冷却」处理：冷却期内不重复弹（避免 onResume 抖动反复打开）；
+  //   3) 若用户此刻正停留在「接收分享」页，则不打扰。
+  // 设计取舍：使用「内存冷却」而非「持久化去重」——
+  //   用户希望「打开 APP 就识别剪贴板」，若持久化去重，则复制同一链接再次打开 APP 会无反应，不符预期。
+  var CLIP_COOLDOWN_MS = 8000;      // 同一内容冷却 8 秒
+  var _clipLastText = '';           // 上次已处理的剪贴板内容（仅内存）
+  var _clipLastAt = 0;              // 上次处理时间戳
+  function looksLikeShareText(text) {
+    if (!text) return false;
+    var s = String(text).trim();
+    if (!s || s.length > 512) return false;
+    // 必须能解析出分享码
+    var parsed = parseShareKey(s);
+    if (!parsed || !parsed.key) return false;
+    // 收紧：要么是 URL，要么是纯分享码，要么含「123云盘/123pan/提取码/pwd」等特征
+    var isUrl = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(s);
+    var isPureCode = /^[A-Za-z0-9_-]{4,64}$/.test(s);
+    var hasHint = /123pan|123\s*云盘|提取码|分享码|pwd=/i.test(s);
+    return isUrl || isPureCode || hasHint;
+  }
+  function tryAutoOpenFromClipboard() {
+    try {
+      if (!bridge || !bridge.getClipboardText) return;
+      // 仅在已进入主界面（非登录页）时处理
+      var mainPage = $('page-main');
+      if (!mainPage || mainPage.classList.contains('hidden')) return;
+      var raw = bridge.getClipboardText();
+      if (!raw) return;
+      var text = String(raw).trim();
+      if (!looksLikeShareText(text)) return;
+      // 冷却：同一内容在冷却期内不重复处理
+      var now = Date.now();
+      if (text === _clipLastText && (now - _clipLastAt) < CLIP_COOLDOWN_MS) return;
+      // 已在接收分享页时不打扰
+      var rp = $('page-receive');
+      if (rp && !rp.classList.contains('hidden')) return;
+      var parsed = parseShareKey(text);
+      if (!parsed || !parsed.key) return;
+      _clipLastText = text;
+      _clipLastAt = now;
+      // 填入并自动打开
+      if ($('receive-link')) $('receive-link').value = text;
+      openReceiveShare();
+      shareState.key = parsed.key;
+      var manualPwd = $('receive-pwd') ? String($('receive-pwd').value || '').trim() : '';
+      shareState.pwd = manualPwd || parsed.pwd || '';
+      shareState.stack = [];
+      shareState.sel = {};
+      toast('已识别剪贴板中的分享链接，正在打开…');
+      loadShareDir('0', 1);
+    } catch (e) { /* 静默失败，不影响正常使用 */ }
   }
   function openReceiveShare() {
     if (!shareState) shareState = { key: '', pwd: '', level: 1, parentId: '0', stack: [], list: [], sel: {} };
