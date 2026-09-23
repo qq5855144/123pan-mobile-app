@@ -3132,21 +3132,62 @@
     });
   }
   // ---- 接收分享 ----
+  // 解析分享链接/分享码，支持多种格式：
+  //   1) https://1816139528.share.123pan.cn/123pan/diJ5Vv-SJKWH   （新版分享域名 + /123pan/）
+  //   2) https://www.123pan.com/s/diJ5Vv-SJKWH                    （旧版 /s/）
+  //   3) https://www.123pan.cn/s/diJ5Vv-SJKWH                     （.cn 域名）
+  //   4) diJ5Vv-SJKWH / diJ5Vv                                    （纯分享码）
+  //   5) 任意带 ?pwd=xxxx / 提取码：xxxx 的文本
+  // 注意：123云盘的分享码「整串（含 -）」才是 ShareKey，不做横杠拆分（与百度网盘不同）。
   function parseShareKey(input) {
     input = String(input || '').trim();
     if (!input) return null;
     var key = '', pwd = '', m;
-    m = input.match(/[?&#](?:pwd|Pwd|p)=([A-Za-z0-9]{1,16})/);
+
+    // 提取码：?pwd=xxxx / &pwd=xxxx / 提取码:xxxx / 提取码：xxxx / 密码:xxxx
+    m = input.match(/[?&#](?:pwd|Pwd|p|password)=([A-Za-z0-9]{1,16})/);
     if (m) pwd = m[1];
-    m = input.match(/\/s\/([A-Za-z0-9_-]+)/);
-    if (m) { key = m[1]; }
-    else {
-      m = input.match(/^([A-Za-z0-9]{4,})(?:-([A-Za-z0-9]{1,16}))?$/);
-      if (m) { key = m[1]; if (m[2] && !pwd) pwd = m[2]; }
+    if (!pwd) {
+      m = input.match(/(?:提取码|密码|提取密码)\s*[:：]?\s*([A-Za-z0-9]{1,16})/);
+      if (m) pwd = m[1];
     }
+
+    // 从 URL 中提取分享码路径段（支持任意域名，不限 123pan）
+    //   形如 .../s/CODE  或  .../123pan/CODE  或  .../CODE.html
+    var pathMatch = input.match(/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//);
+    if (pathMatch) {
+      // 是 URL：取路径最后一段（去掉 query/hash）
+      var noQuery = input.split('#')[0].split('?')[0];
+      // URL 尾部可能混有" 密码：xxxx"等中文尾巴，先把 URL 本体切出来
+      var urlEnd = noQuery.search(/[\s\u4e00-\u9fa5]/);
+      var urlOnly = urlEnd >= 0 ? noQuery.slice(0, urlEnd) : noQuery;
+      // 去掉协议与域名，保留路径
+      var pathPart = urlOnly.replace(/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\/[^/]*/, '');
+      var segs = pathPart.split('/').filter(function (s) { return s.length > 0; });
+      // 依次从后往前找，跳过已知的非码段（s / 123pan / share 等）
+      for (var i = segs.length - 1; i >= 0; i--) {
+        var seg = String(segs[i]).replace(/\.(html?|htm|php|aspx?|jsp)$/i, ''); // 去网页后缀
+        var head = seg.match(/^[A-Za-z0-9_-]+/);   // 只取段首的码部分（防粘连）
+        if (!head) continue;
+        seg = head[0].replace(/[-_]+$/, '');
+        if (/^(s|123pan|share|pan|file|f)$/i.test(seg)) continue;
+        // 分享码：字母数字，可含横杠，长度 >= 4
+        if (/^[A-Za-z0-9_-]{4,64}$/.test(seg)) { key = seg; break; }
+      }
+    } else {
+      // 非 URL：可能是纯分享码，或"文本 提取码:xxxx"等混合文本
+      m = input.match(/([A-Za-z0-9]{4,64}-[A-Za-z0-9]{1,32})/);   // 优先带横杠的完整码
+      if (m) { key = m[1]; }
+      else {
+        m = input.match(/([A-Za-z0-9]{4,64})/);
+        if (m) { key = m[1]; }
+      }
+    }
+
     if (!key) return null;
-    var dash = key.indexOf('-');
-    if (dash >= 0) { if (!pwd) pwd = key.slice(dash + 1); key = key.slice(0, dash); }
+    // 去掉首尾可能粘连的标点
+    key = key.replace(/^[-_\s]+|[-_\s]+$/g, '');
+    if (!key) return null;
     return { key: key, pwd: pwd };
   }
   function openReceiveShare() {
