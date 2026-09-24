@@ -474,12 +474,8 @@
     bOver.type = 'button';
     bOver.className = 'btn-plain';
     bOver.textContent = '覆盖';
-    bOver.addEventListener('click', function () {
-      if (bOver._sure) { hide($('confirm-modal')); finishUploadChoice(2); return; }
-      bOver._sure = true;
-      bOver.textContent = '确认覆盖？';
-      toast('再次点击「确认覆盖？」，原有同名文件将被替换');
-    });
+    // 单选即执行：弹窗本身已是确认步骤，点击「覆盖」直接以 duplicate=2 上传，不再二次确认
+    bOver.addEventListener('click', function () { hide($('confirm-modal')); finishUploadChoice(2); });
     var bCancel = document.createElement('button');
     bCancel.type = 'button';
     bCancel.className = 'btn-plain';
@@ -736,6 +732,9 @@
       ttRefreshBar();
       toast('已删除 ' + keys.length + ' 项');
     };
+    // 上传记录：无「本地文件」概念，直接删除记录（可顺带取消进行中的上传），不再弹「删除类型」确认
+    if (isUpload) { delRecords(false); return; }
+    // 下载记录：保留原「仅删除记录 / 记录与文件同时删除」二选弹窗
     var items = [
       { label: '仅删除记录', cls: '', fn: function () { closeSheet(); delRecords(false); } },
       { label: hasFile ? '记录与文件同时删除' : '记录与文件同时删除（文件未就绪）',
