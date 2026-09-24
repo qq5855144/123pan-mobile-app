@@ -47,10 +47,26 @@ grep -E 'versionCode|versionName' "$W/AndroidManifest.xml"
 "$BT/aapt2" link -I "$ANDROID_JAR" --manifest "$W/AndroidManifest.xml" \
     -A "$MAIN/assets" -o "$W/base.apk" --java "$W/gen" --auto-add-overlay "$W/gateway.zip"
 
+# 2.1) 解析 manifest 的 package，得到 aapt2 实际生成 R.java 的包路径
+#      共存包改造后 package 可能不是 com.pan.mobile（如 com.pan.mobile2），
+#      不能用硬编码路径，否则 javac 找不到 R.java 导致整个构建失败。
+APP_PKG=$(sed -nE 's/.*package="([^"]+)".*/\1/p' "$W/AndroidManifest.xml" | head -1)
+if [ -z "$APP_PKG" ]; then
+    echo "ERROR: cannot parse package from AndroidManifest.xml" >&2
+    exit 1
+fi
+R_JAVA="$W/gen/$(echo "$APP_PKG" | tr '.' '/' )/R.java"
+echo "=== app package=$APP_PKG, R.java=$R_JAVA ==="
+if [ ! -f "$R_JAVA" ]; then
+    echo "ERROR: R.java not found at $R_JAVA" >&2
+    find "$W/gen" -name 'R.java' 2>/dev/null
+    exit 1
+fi
+
 # 3) compile java
 find "$MAIN/java" -name '*.java' > "$W/sources.txt"
 javac -source 1.8 -target 1.8 -cp "$ANDROID_JAR" \
-    -d "$W/obj" @"$W/sources.txt" "$W/gen/com/pan/mobile/R.java" 2>&1 | head -30
+    -d "$W/obj" @"$W/sources.txt" "$R_JAVA" 2>&1 | head -30
 
 # 4) dex with d8
 "$BT/d8" --release --lib "$ANDROID_JAR" --output "$W/apk" \
