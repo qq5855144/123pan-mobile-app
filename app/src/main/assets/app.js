@@ -359,7 +359,8 @@
   function enqueueUpload(path) {
     if (!state.upQueue) state.upQueue = [];
     var name = String(path).split('/').pop() || ('file_' + Date.now());
-    state.upQueue.push({ id: -1, name: name, path: path, parentId: state.currentDir, size: 0, done: 0, total: 0, status: 'waiting', failMsg: '', time: Date.now() });
+    // duplicate: -1 表示尚未决定（启动时检测同名再弹窗选择）；1=保留两者(自动更名) 2=覆盖
+    state.upQueue.push({ id: -1, name: name, path: path, parentId: state.currentDir, size: 0, done: 0, total: 0, status: 'waiting', failMsg: '', duplicate: -1, time: Date.now() });
     saveUpQueue();
     toast('已加入上传队列：' + name);
     scheduleNextUpload();
@@ -383,6 +384,28 @@
       if (state.view === 'transfers') renderTransfers();
       return;
     }
+    // 同名检测 + 弹窗选择策略（duplicate 尚未决定时）：覆盖(2) / 保留两者(1)
+    if (t.duplicate === undefined || t.duplicate === null || Number(t.duplicate) < 0) {
+      if (state.uploadAsking) return; // 已有弹窗进行中，避免并发
+      state.uploadAsking = true;
+      t.status = 'waiting'; // 保持等待，等用户选择
+      resolveUploadDuplicate(t, function (dup) {
+        state.uploadAsking = false;
+        if (dup === null) {
+          // 用户取消：标记取消
+          t.status = 'cancelled';
+          t.failMsg = '';
+          saveUpQueue();
+          if (state.view === 'transfers') renderTransfers();
+          scheduleNextUpload();
+          return;
+        }
+        t.duplicate = dup;
+        saveUpQueue();
+        startUploadItem(t);
+      });
+      return;
+    }
     t.status = 'uploading';
     t.done = 0;
     t.failMsg = '';
@@ -392,7 +415,11 @@
     if (state.view === 'transfers') renderTransfers();
     showUploadProgress(t.name, 0, 0);
     var nid = -1;
-    try { nid = Number(bridge.uploadFileTask(t.path, Number(t.parentId) || 0)); } catch (e) {}
+    var dup = Number(t.duplicate);
+    try { nid = Number(bridge.uploadFileTask(t.path, Number(t.parentId) || 0, dup)); } catch (e) {
+      // 旧版本 bridge 无三参重载时降级为两参调用（保证兼容）
+      try { nid = Number(bridge.uploadFileTask(t.path, Number(t.parentId) || 0)); } catch (e2) {}
+    }
     if (nid >= 0) { t.id = nid; saveUpQueue(); }
     else {
       t.status = 'failed';
@@ -401,6 +428,72 @@
       if (state.view === 'transfers') renderTransfers();
       scheduleNextUpload();
     }
+  }
+  // 解析同名处理策略：命中同名 -> 弹窗让用户选「覆盖 / 保留两者(自动更名)」；无同名 -> 直接保留两者
+  // 回调参数：1=保留两者(自动更名) 2=覆盖 null=取消
+  function resolveUploadDuplicate(t, cb) {
+    var exists = false;
+    try {
+      var list = (_currentList && _currentList.length) ? _currentList : [];
+      // 仅当当前浏览目录即目标目录时，缓存列表才代表目标目录内容
+      if (Number(t.parentId) === Number(state.currentDir)) {
+        for (var i = 0; i < list.length; i++) {
+          var it = list[i];
+          if (it && it.Type !== 1 && String(it.FileName) === String(t.name)) { exists = true; break; }
+        }
+      } else {
+        // 目标目录非当前浏览目录（如文件夹上传）：无法用缓存判定，保守起见按“可能同名”处理，
+        // 交由服务端 duplicate 决定；默认“保留两者”最安全（不误删已有文件）。
+        exists = false;
+      }
+    } catch (e) { exists = false; }
+    if (!exists) { cb(1); return; } // 无同名：直接“保留两者(自动更名)”，服务端不会重名
+    showUploadConflictModal(t.name, function (choice) { cb(choice); });
+  }
+  // 同名冲突弹窗：需求要求二选一 —— 「覆盖」或「保留两者(自动更名)」
+  // 复用现成 #confirm-modal 基础设施（不新建 DOM），三按钮：保留两者(主) / 覆盖(二次确认) / 取消上传
+  function showUploadConflictModal(name, done) {
+    state.uploadChoiceDone = done;
+    var title = $('cf-title');
+    if (title) title.textContent = '发现同名文件';
+    var msg = $('cf-message');
+    if (msg) {
+      msg.innerHTML = '目标目录已存在同名文件：<div style="margin:6px 0;font-weight:600;word-break:break-all;">'
+        + esc(name) + '</div>请选择处理方式：';
+    }
+    var btns = document.querySelector('#confirm-modal .modal-btns');
+    if (!btns) { show($('confirm-modal')); return; }
+    btns.style.display = '';
+    btns.innerHTML = '';
+    var bKeep = document.createElement('button');
+    bKeep.type = 'button';
+    bKeep.className = 'btn-primary';
+    bKeep.textContent = '保留两者';
+    bKeep.addEventListener('click', function () { hide($('confirm-modal')); finishUploadChoice(1); });
+    var bOver = document.createElement('button');
+    bOver.type = 'button';
+    bOver.className = 'btn-plain';
+    bOver.textContent = '覆盖';
+    bOver.addEventListener('click', function () {
+      if (bOver._sure) { hide($('confirm-modal')); finishUploadChoice(2); return; }
+      bOver._sure = true;
+      bOver.textContent = '确认覆盖？';
+      toast('再次点击「确认覆盖？」，原有同名文件将被替换');
+    });
+    var bCancel = document.createElement('button');
+    bCancel.type = 'button';
+    bCancel.className = 'btn-plain';
+    bCancel.textContent = '取消上传';
+    bCancel.addEventListener('click', function () { hide($('confirm-modal')); finishUploadChoice(null); });
+    btns.appendChild(bKeep);
+    btns.appendChild(bOver);
+    btns.appendChild(bCancel);
+    show($('confirm-modal'));
+  }
+  function finishUploadChoice(choice) {
+    var cb = state.uploadChoiceDone;
+    state.uploadChoiceDone = null;
+    if (cb) cb(choice);
   }
   function cancelUploadItem(t) {
     if (!t) return;
@@ -1981,6 +2074,7 @@
   }
   // 详细信息弹窗
   function showFileDetail(item) {
+    restoreConfirmBtns();
     var size = item.Size || item.size || 0;
     var t = item.UpdateTime || item.ModTime || item.Time || '';
     var html = '<div style="padding:8px 0;line-height:2;">'
@@ -2001,7 +2095,26 @@
   function closeSheet() { hide($('action-sheet')); }
 
   // ---------- 自定义确认弹窗（替代原生 confirm） ----------
+  // 恢复 #confirm-modal 的默认按钮（上传同名弹窗会动态替换按钮，其它场景需还原）
+  function restoreConfirmBtns() {
+    var btns = document.querySelector('#confirm-modal .modal-btns');
+    if (!btns) return;
+    if (btns.querySelector('#cf-ok')) return; // 已是默认结构
+    btns.innerHTML = '<button class="btn-plain" data-close>取消</button>'
+      + '<button id="cf-ok" class="btn-primary danger">确定</button>';
+    btns.style.display = '';
+    var ok = btns.querySelector('#cf-ok');
+    if (ok) ok.addEventListener('click', onCfOk);
+    // 重新绑定 data-close（新建的"取消"按钮）
+    btns.querySelectorAll('[data-close]').forEach(function (el) {
+      el.addEventListener('click', function () {
+        var m = el.closest && el.closest('.modal');
+        if (m) hide(m);
+      });
+    });
+  }
   function showConfirm(message, onOk) {
+    restoreConfirmBtns();
     $('cf-message').textContent = message || '';
     state.confirmOk = onOk || null;
     show($('confirm-modal'));
