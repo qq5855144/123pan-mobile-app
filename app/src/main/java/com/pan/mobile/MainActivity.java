@@ -2111,7 +2111,12 @@ public class MainActivity extends Activity {
      * 结果通过 window.__onUploadResult(id,ok,msg) 回传前端（进度：window.__onUploadProgress(id,done,total)）。
      */
     // 创建上传任务并立即返回任务 id（供上传队列管理 / 取消）；实际上传在后台线程执行
+    // duplicate 语义（站内 /b/api/file/upload_request，与官方「同名文件默认处理策略」一致）：
+    //   0=提示(每次弹窗，无界面 API 调用会直接失败) 1=保留两者(自动更名) 2=覆盖 3=跳过
     private long uploadFile(final String localPath, final long parentFileId) {
+        return uploadFile(localPath, parentFileId, 1);
+    }
+    private long uploadFile(final String localPath, final long parentFileId, final int duplicate) {
         final UpTask ut = new UpTask();
         ut.id = nextUpId++;
         ut.localPath = localPath;
@@ -2150,8 +2155,8 @@ public class MainActivity extends Activity {
                             + "\",\"size\":" + size
                             + ",\"parentFileId\":" + parentFileId
                             + ",\"type\":0"
-                            + ",\"duplicate\":0}";
-                        Log.d("PAN", "[1]upload_request req body=" + upBody);
+                            + ",\"duplicate\":" + duplicate + "}";
+                        Log.d("PAN", "[1]upload_request req body=" + upBody + " duplicate=" + duplicate);
                         Log.d("PAN", "[1]DEBUG token=" + token);
                         String upResp = httpRequestWithRetry("POST", API + "/b/api/file/upload_request", upBody, true, 2);
                         Log.d("PAN", "[1]upload_request resp=" + upResp);
@@ -3361,6 +3366,12 @@ public class MainActivity extends Activity {
         // 上传任务（队列化）：创建任务并返回任务 id（>=800000000；失败 -1）
         public long uploadFileTask(final String localPath, final long parentFileId) {
             try { return act.uploadFile(localPath, parentFileId); }
+            catch (Exception e) { return -1; }
+        }
+        @JavascriptInterface
+        // 上传任务（带同名处理策略）：duplicate 0=提示 1=保留两者(自动更名) 2=覆盖 3=跳过
+        public long uploadFileTask(final String localPath, final long parentFileId, final int duplicate) {
+            try { return act.uploadFile(localPath, parentFileId, duplicate); }
             catch (Exception e) { return -1; }
         }
         @JavascriptInterface
