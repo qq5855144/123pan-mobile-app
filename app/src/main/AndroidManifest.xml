@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools"
-    package="com.pan.mobile2"
+    package="com.pan.mobile"
     android:versionCode="170"
     android:versionName="1.7.0">
 
@@ -36,7 +36,7 @@
 
         <provider
             android:name="com.pan.mobile.PanProvider"
-            android:authorities="com.pan.mobile2.pan"
+            android:authorities="com.pan.mobile.pan"
             android:grantUriPermissions="true"
             android:exported="true" />
     </application>
