@@ -15,6 +15,10 @@
     <!-- 读取剪贴板：应用在前台时用于识别 123 分享链接并自动打开（Android 10+ 仅前台可读） -->
     <uses-permission android:name="android.permission.READ_CLIPBOARD"
         tools:ignore="ProtectedPermissions" />
+    <!-- 前台服务保活：下载进行中提升进程优先级，避免挂后台被系统杀死导致下载失败 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application
         android:label="123\u4e91\u76d8"
@@ -39,5 +43,9 @@
             android:authorities="com.pan.mobile.pan"
             android:grantUriPermissions="true"
             android:exported="true" />
+        <service
+            android:name="com.pan.mobile.DownloadService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
     </application>
 </manifest>
