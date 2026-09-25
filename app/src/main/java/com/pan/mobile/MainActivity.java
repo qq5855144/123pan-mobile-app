@@ -661,6 +661,7 @@ public class MainActivity extends Activity {
             t.expected = expectedSize;
             t.status = 1;
             dlTasks.put(taskId, t);
+            ensureDownloadService();
             logDl("downloadStream CALLED fname=" + fname + " expected=" + expectedSize + " url=" + url);
             startDlThread(t);
             Log.d("PAN", "stream dl enqueued: " + fname + " id=" + taskId + " expected=" + expectedSize);
@@ -695,6 +696,35 @@ public class MainActivity extends Activity {
         volatile long done;   // 已上传字节
         volatile long total;  // 总字节
     }
+    /** 下载进行中启动前台保活服务，避免挂后台被系统杀死导致下载失败 */
+    private void ensureDownloadService() {
+        try {
+            Intent svc = new Intent(this, DownloadService.class);
+            svc.setAction(DownloadService.ACTION_START);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(svc);
+            } else {
+                startService(svc);
+            }
+        } catch (Exception e) {
+            Log.e("PAN", "ensureDownloadService fail: " + e, e);
+        }
+    }
+
+    /** 无活动下载任务时停止前台保活服务 */
+    private void stopDownloadServiceIfIdle() {
+        for (DlTask tt : dlTasks.values()) {
+            if (tt.status == 1 || tt.status == 2) return; // 仍有下载中/暂停任务，保持保活
+        }
+        try {
+            Intent svc = new Intent(this, DownloadService.class);
+            svc.setAction(DownloadService.ACTION_STOP);
+            startService(svc);
+        } catch (Exception e) {
+            Log.e("PAN", "stopDownloadServiceIfIdle fail: " + e, e);
+        }
+    }
+
     /** 启动下载线程（runDlTask 内部有 running 去重保护） */
     private void startDlThread(final DlTask t) {
         executor.execute(new Runnable() {
@@ -707,7 +737,7 @@ public class MainActivity extends Activity {
             if (t.running) return; // 已有线程在执行
             t.running = true;
         }
-        if (t.cancelled) { t.running = false; return; }
+        if (t.cancelled) { t.running = false; stopDownloadServiceIfIdle(); return; }
         t.status = 1;
         logDl("task#" + t.id + " download begin fname=" + t.filename + " from=" + t.done + " expected=" + t.expected);
         // GitHub 更新包（自动更新下载）：走专用路径 —— 直连 + 镜像回退 + 自动重试 + 严格字节校验。
@@ -716,6 +746,7 @@ public class MainActivity extends Activity {
         if (isGithubUpdateUrl(t.url)) {
             logDl("task#" + t.id + " route to github update downloader");
             runGithubUpdateDownload(t);
+            stopDownloadServiceIfIdle();
             return;
         }
         java.io.OutputStream out = null;
@@ -846,6 +877,7 @@ public class MainActivity extends Activity {
             try { if (out != null) out.close(); } catch (Exception ignore) {}
             if (conn != null) conn.disconnect();
             t.running = false;
+            stopDownloadServiceIfIdle();
         }
     }
     // ===== GitHub 更新包下载（自动更新专用）：并发测速择优 + 镜像回退 + 自动重试 + 严格字节校验 =====
@@ -1048,6 +1080,7 @@ public class MainActivity extends Activity {
             logDl("task#" + t.id + " github dl EXCEPTION " + e);
         } finally {
             t.running = false;
+            stopDownloadServiceIfIdle();
         }
     }
 
